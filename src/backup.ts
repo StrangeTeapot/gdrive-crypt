@@ -3,6 +3,17 @@ import { zipSync } from 'fflate';
 import type CryptDriveSync from './main.ts';
 import { T } from './i18n.ts';
 
+interface RemoteEntry {
+    mtime: number;
+    size?: number;
+}
+
+interface RemoteStorage {
+    list(): Promise<{ files: Map<string, RemoteEntry> }>;
+    write(path: string, data: Uint8Array, mtime: number): Promise<RemoteEntry>;
+    trash(path: string): Promise<void>;
+}
+
 export class BackupManager {
     private plugin: CryptDriveSync;
 
@@ -21,13 +32,21 @@ export class BackupManager {
         p.log('Starting vault backup...');
 
         try {
+            // Declare localDir ONCE at top of method scope
+            const localDir = p.settings.localBackupFolder || '_backups';
+
             // 1. Gather vault files and compress into a ZIP archive
             const filesToZip: Record<string, Uint8Array> = {};
             const loadedFiles = p.app.vault.getFiles();
 
             for (const file of loadedFiles) {
-                // Ignore local backup directory to prevent recursive archiving
-                if (p.settings.backupKeepLocal && file.path.startsWith(p.settings.localBackupFolder)) {
+                // Ignore all backup directories and zip archives to prevent recursive bundling
+                if (
+                    file.path.startsWith(localDir) ||
+                    file.path.startsWith('_backups') ||
+                    file.path.startsWith('backups') ||
+                    file.path.endsWith('.zip')
+                ) {
                     continue;
                 }
                 const data = new Uint8Array(await p.app.vault.readBinary(file));
@@ -39,14 +58,13 @@ export class BackupManager {
 
             // 2. Store local unencrypted copy if enabled
             if (p.settings.backupKeepLocal) {
-                const localDir = p.settings.localBackupFolder || '_backups';
                 const localPath = `${localDir}/backup-${this.timestamp()}.zip`;
                 
                 if (!(await p.app.vault.adapter.exists(localDir))) {
                     await p.app.vault.adapter.mkdir(localDir);
                 }
                 
-                await p.app.vault.adapter.writeBinary(localPath, zipBuffer.buffer as ArrayBuffer);
+                await p.app.vault.adapter.writeBinary(localPath, zipBuffer.buffer);
                 p.log(`Saved local backup copy to ${localPath}`);
                 await this.pruneLocalBackups(p.settings.maxBackups);
             }
@@ -58,13 +76,14 @@ export class BackupManager {
             const remote = await p.remote(false);
             if (!remote) throw new Error('Remote storage unavailable');
 
-            const filename = `backup-${this.timestamp()}.zip`;
-            const tmpPath = `backups/${filename}.tmp`;
-            const finalPath = `backups/${filename}`;
+            // Declare mtime BEFORE remote write operations
             const mtime = Date.now();
+            const filename = `backup-${this.timestamp()}.zip`;
+            const tmpPath = `${localDir}/${filename}.tmp`;
+            const finalPath = `${localDir}/${filename}`;
 
             // Staged upload as .tmp first
-            const entry = await remote.write(tmpPath, zipBuffer, mtime);
+            const entry = await (remote as unknown as RemoteStorage).write(tmpPath, zipBuffer, mtime);
 
             // 4. Verification Check
             if (!entry || entry.size !== zipBuffer.byteLength) {
@@ -72,12 +91,12 @@ export class BackupManager {
             }
 
             // 5. Promote staged .tmp file to final path
-            await remote.write(finalPath, zipBuffer, mtime);
-            await remote.trash(tmpPath);
+            await (remote as unknown as RemoteStorage).write(finalPath, zipBuffer, mtime);
+            await (remote as unknown as RemoteStorage).trash(tmpPath);
             p.log(`Verified and stored remote backup: ${finalPath}`);
 
             // 6. Safe Rotation: Prune old remote backups ONLY after verification succeeds
-            await this.pruneRemoteBackups(remote, Math.min(Math.max(p.settings.maxBackups, 1), 10));
+            await this.pruneRemoteBackups(remote as unknown as RemoteStorage, Math.min(Math.max(p.settings.maxBackups, 1), 10));
 
             new Notice(T.backupSuccess);
             p.log('Vault backup completed successfully.');
@@ -94,12 +113,13 @@ export class BackupManager {
         return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
     }
 
-    private async pruneRemoteBackups(remote: any, maxCount: number): Promise<void> {
+    private async pruneRemoteBackups(remote: RemoteStorage, maxCount: number): Promise<void> {
+        const localDir = this.plugin.settings.localBackupFolder || '_backups';
         const listRes = await remote.list();
         const backupFiles: { path: string; mtime: number }[] = [];
 
         for (const [path, entry] of listRes.files.entries()) {
-            if (path.startsWith('backups/') && path.endsWith('.zip')) {
+            if ((path.startsWith(`${localDir}/`) || path.startsWith('backups/')) && path.endsWith('.zip')) {
                 backupFiles.push({ path, mtime: entry.mtime });
             }
         }
