@@ -19,6 +19,7 @@ export interface Settings {
 	confirmPlan: boolean;
 	deviceName: string;
 	wizardDone: boolean;
+	// AI CODE backup feature
 	backupEnabled: boolean;
     maxBackups: number;
     backupKeepLocal: boolean;
@@ -42,6 +43,7 @@ export const DEFAULTS: Settings = {
 	confirmPlan: false,
 	deviceName: '',
 	wizardDone: false,
+	// AI CODE backup feature
 	backupEnabled: true,
     maxBackups: 5,
     backupKeepLocal: false,
@@ -59,7 +61,7 @@ export class CryptDriveSyncSettingTab extends PluginSettingTab {
 		this.plugin = plugin;
 		this.icon = 'refresh-cw';
 	}
-
+// AI CODE backup feature
 async setControlValue(key: string, value: unknown): Promise<void> {
     await super.setControlValue(key, value);
     if (RESETS_STATE.has(key)) await this.plugin.resetState();
@@ -181,16 +183,17 @@ async setControlValue(key: string, value: unknown): Promise<void> {
 							{ name: T.trashName, desc: T.trashDesc, control: { type: 'text', key: 'trashDir', validate: notEmpty } },
 						],
 					},
+					// AI CODE backup feature
 					{
-    type: 'group',
-    heading: T.hBackup,
-    items: [
-        { name: T.backupEnabledName, desc: T.backupEnabledDesc, control: { type: 'toggle', key: 'backupEnabled' } },
-        { name: T.maxBackupsName, desc: T.maxBackupsDesc, control: { type: 'number', key: 'maxBackups', min: 1, max: 10, step: 1 } },
-        { name: T.keepLocalName, desc: T.keepLocalDesc, control: { type: 'toggle', key: 'backupKeepLocal' } },
-        { name: T.localFolderDesc, desc: T.localFolderDesc, control: { type: 'text', key: 'localBackupFolder', validate: notEmpty } },
-    ],
-},
+                        type: 'group',
+                        heading: T.hBackup,
+                        items: [
+                            { name: T.backupEnabledName, desc: T.backupEnabledDesc, control: { type: 'toggle', key: 'backupEnabled' } },
+                            { name: T.maxBackupsName, desc: T.maxBackupsDesc, control: { type: 'number', key: 'maxBackups', min: 1, max: 10, step: 1 } },
+                            { name: T.keepLocalName, desc: T.keepLocalDesc, control: { type: 'toggle', key: 'backupKeepLocal' } },
+                            { name: T.localFolderDesc, desc: T.localFolderDesc, control: { type: 'text', key: 'localBackupFolder', validate: notEmpty } },
+                        ],
+                    },
 					{
 						type: 'group',
 						heading: T.hMaintenance,

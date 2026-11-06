@@ -10,7 +10,7 @@ import { apply, plan } from './sync.ts';
 import type { Action, Plan } from './sync.ts';
 import type { BaseEntry, LocalEntry, LocalFs, RemoteEntry } from './types.ts';
 import { SetupWizard } from './wizard.ts';
-import { BackupManager } from './backup.ts';
+import { BackupManager } from './backup.ts'; // added backup feature AI CODE
 
 // Secrets live in Obsidian's SecretStorage: per device, never in the vault.
 // Keys are namespaced per vault (see sid()): SecretStorage is app-wide, and each vault may use its own password/sign-in.
@@ -36,7 +36,7 @@ export default class CryptDriveSync extends Plugin {
 	private editTimer = 0;
 	private editedDuringSync = false;
 	private createRoot = false; // user confirmed creating a missing crypt root (this session)
-	backupManager = new BackupManager(this);
+	backupManager = new BackupManager(this); //added backup feature AI CODE
 
 	async onload() {
 		setLanguage(getLanguage());
@@ -69,39 +69,43 @@ export default class CryptDriveSync extends Plugin {
 			if (!this.ready()) {
 				if (!this.settings.wizardDone) this.openWizard(); // first run: guide instead of failing silently
 			} else if (this.settings.syncOnStart) void this.sync({ quiet: true });
-const onEdit = () => {
-    const sec = Number(this.settings.afterEditSec);
-    if (!sec || sec <= 0) return;
-    if (this.running) {
-        this.editedDuringSync = true;
+        // AI CODE fix sync triggered on windows focus
+		const onEdit = () => {
+        const sec = Number(this.settings.afterEditSec);
+         if (!sec || sec <= 0) return;
+          if (this.running) {
+           this.editedDuringSync = true;
         return;
-    }
-    window.clearTimeout(this.editTimer);
-    this.editTimer = window.setTimeout(() => void this.sync({ quiet: true }), sec * 1000);
-};
+        }
+        window.clearTimeout(this.editTimer);
+        this.editTimer = window.setTimeout(() => void this.sync({ quiet: true }), sec * 1000);
+        };
+		// END OF AI CODE
 			for (const ev of ['create', 'modify', 'delete', 'rename'] as const) this.registerEvent(this.app.vault.on(ev as 'create', onEdit));
 		});
 		this.registerInterval(window.setInterval(() => {
 			const min = this.settings.intervalMin;
 			if (min > 0 && Date.now() - this.lastSyncAt >= min * 60_000) void this.sync({ quiet: true });
 		}, 60_000));
-this.registerDomEvent(document, 'visibilitychange', () => {
-    const min = Number(this.settings.intervalMin);
-    if (min > 0 && document.visibilityState === 'visible' && Date.now() - this.lastSyncAt >= min * 60_000) {
+		// AI CODE fix sync on focus part 2
+        this.registerDomEvent(document, 'visibilitychange', () => {
+        const min = Number(this.settings.intervalMin);
+        if (min > 0 && document.visibilityState === 'visible' && Date.now() - this.lastSyncAt >= min * 60_000) {
         void this.sync({ quiet: true });
-    }
-});
+        }
+        });
 		this.addCommand({
             id: 'create-backup',
             name: T.cmdBackup,
             callback: () => void this.backupManager.createBackup(),
         });
-	}
+	    }
 
-refreshTimers(): void {
+        refreshTimers(): void {
 		window.clearTimeout(this.editTimer);
 		this.editTimer = 0;
-	}
+	    }
+		// END OF AI BLOCK
 
 	onunload() {
 		window.clearTimeout(this.editTimer);
@@ -166,11 +170,13 @@ refreshTimers(): void {
 		} finally {
 			this.running = false;
 			if (again) void this.sync(opts);
-const editSec = Number(this.settings.afterEditSec);
-if (this.editedDuringSync && editSec > 0) {
-    window.clearTimeout(this.editTimer);
-    this.editTimer = window.setTimeout(() => void this.sync({ quiet: true }), editSec * 1000);
-}
+		// AI CODE fix focus	
+        const editSec = Number(this.settings.afterEditSec);
+        if (this.editedDuringSync && editSec > 0) {
+        window.clearTimeout(this.editTimer);
+        this.editTimer = window.setTimeout(() => void this.sync({ quiet: true }), editSec * 1000);
+        }
+		// END OF AI CODE
 		}
 	}
 
@@ -239,7 +245,7 @@ if (this.editedDuringSync && editSec > 0) {
 		this.storeSecret(key, value);
 		if (key === PASSWORD_ID || key === SALT_ID) await this.resetState();
 	}
-
+    // removed private to access it AI CODE EDIT
 	async getCrypt(): Promise<Crypt | undefined> {
 		const password = this.secret(PASSWORD_ID);
 		if (!password) return undefined;
@@ -271,7 +277,7 @@ if (this.editedDuringSync && editSec > 0) {
 		}
 		if (secret) this.storeSecret(CLIENT_SECRET_ID, secret);
 	}
-
+    // removed private to access it AI CODE EDIT
 	async remote(report = true): Promise<CryptDriveFs | undefined> {
 		const s = this.settings;
 		const missing = !this.hasClient() ? T.needClient : !this.isLoggedIn() ? T.needLogin : !this.secret(PASSWORD_ID) ? T.needPassword : '';

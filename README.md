@@ -1,3 +1,23 @@
+CODE **EDITED** BY AI
+
+This is a fork of [crypt-drive-sync](https://github.com/mooncodee/crypt-drive-sync)
+
+Added:
+- Snapshot / backup feature
+- History of snapshots with auto-clean (1 to 10 snapshots)
+- Local save of snapshot (optional)
+
+## Backups/snapshots
+Use command pallete CTRL+P and search for "create encrypted backup now"
+
+It is an additional feature that can be activated **only manually** by using command pallete.
+Creates a full snapshot/backup of your vault and uploads it to _backups folder by default inside your vault folder.
+Backup is a zip archive named with date/timestamp. **Archive is not encrypted** by default. During a setup use encrypted/passworded rclone vault folder, therefore your archive will be encrypted inside sync folder. Backup folder and snapshots can be accsessed via rclone, rclone gui or any other compatiable software. 
+
+Backups can be also kept locally on your device. If you want to keep backups **only locally** then use a dot folder, for example change default _backup to .backup
+
+Auto-clean. You can choose how many snapshots to keep from 1 to 10. When you exceed snapshot limit then the oldest by date snapshot will be removed on google drive. If you keep snapshots locally, they will be cleaned up too in the same way.
+
 # Crypt Drive Sync
 
 Sync your Obsidian vault across all your devices — Mac, Windows, Linux, iPhone, iPad, Android — through **your own Google Drive**, with **end-to-end encryption**. Google stores only encrypted files: no note names, no text.
