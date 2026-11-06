@@ -4,7 +4,7 @@
 	"version": "0.1",
 	"minAppVersion": "1.13.2",
 	"description": "Sync your vault across devices through your own Google Drive, end-to-end encrypted and compatible with rclone crypt.",
-	"author": "mooncodee (fork by StrangeTeapot",
+	"author": "StrangeTeapot (original by mooncodee)",
 	"authorUrl": "https://github.com/StrangeTeapot",
 	"isDesktopOnly": false
 }
