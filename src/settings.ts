@@ -47,7 +47,7 @@ export const DEFAULTS: Settings = {
 	backupEnabled: true,
     maxBackups: 5,
     backupKeepLocal: false,
-    localBackupFolder: '_backups',
+    localBackupFolder: '.backups',
 };
 
 // Changing any of these points the plugin at a different remote → forget sync state.

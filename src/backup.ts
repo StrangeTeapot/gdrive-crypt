@@ -16,9 +16,20 @@ interface RemoteStorage {
 
 export class BackupManager {
     private plugin: CryptDriveSync;
+    private readonly backupPattern = /backup-\d{8}-\d{6}\.zip$/;
 
     constructor(plugin: CryptDriveSync) {
         this.plugin = plugin;
+    }
+
+    /**
+     * Enforces a leading dot on the backup folder path to ensure regular vault
+     * sync engine (src/main.ts) automatically ignores it (seg.startsWith('.')).
+     */
+    private getBackupFolder(): string {
+        const raw = (this.plugin.settings.localBackupFolder || '.backups').trim();
+        const cleaned = raw.replace(/^\/+/, ''); // Strip leading slashes
+        return cleaned.startsWith('.') ? cleaned : `.${cleaned}`;
     }
 
     async createBackup(): Promise<void> {
@@ -32,20 +43,19 @@ export class BackupManager {
         p.log('Starting vault backup...');
 
         try {
-            // Declare localDir ONCE at top of method scope
-            const localDir = p.settings.localBackupFolder || '_backups';
+            const localDir = this.getBackupFolder();
 
             // 1. Gather vault files and compress into a ZIP archive
             const filesToZip: Record<string, Uint8Array> = {};
             const loadedFiles = p.app.vault.getFiles();
 
             for (const file of loadedFiles) {
-                // Ignore all backup directories and zip archives to prevent recursive bundling
+                // Ignore backup directories and auto-generated backup-YYYYMMDD-HHMMSS.zip files
                 if (
                     file.path.startsWith(localDir) ||
                     file.path.startsWith('_backups') ||
                     file.path.startsWith('backups') ||
-                    file.path.endsWith('.zip')
+                    this.backupPattern.test(file.path)
                 ) {
                     continue;
                 }
@@ -76,7 +86,6 @@ export class BackupManager {
             const remote = await p.remote(false);
             if (!remote) throw new Error('Remote storage unavailable');
 
-            // Declare mtime BEFORE remote write operations
             const mtime = Date.now();
             const filename = `backup-${this.timestamp()}.zip`;
             const tmpPath = `${localDir}/${filename}.tmp`;
@@ -114,12 +123,15 @@ export class BackupManager {
     }
 
     private async pruneRemoteBackups(remote: RemoteStorage, maxCount: number): Promise<void> {
-        const localDir = this.plugin.settings.localBackupFolder || '_backups';
+        const localDir = this.getBackupFolder();
         const listRes = await remote.list();
         const backupFiles: { path: string; mtime: number }[] = [];
 
         for (const [path, entry] of listRes.files.entries()) {
-            if ((path.startsWith(`${localDir}/`) || path.startsWith('backups/')) && path.endsWith('.zip')) {
+            if (
+                (path.startsWith(`${localDir}/`) || path.startsWith('backups/') || path.startsWith('_backups/')) &&
+                this.backupPattern.test(path)
+            ) {
                 backupFiles.push({ path, mtime: entry.mtime });
             }
         }
@@ -137,12 +149,14 @@ export class BackupManager {
     }
 
     private async pruneLocalBackups(maxCount: number): Promise<void> {
-        const localDir = this.plugin.settings.localBackupFolder || '_backups';
+        const localDir = this.getBackupFolder();
+        if (!(await this.plugin.app.vault.adapter.exists(localDir))) return;
+
         const list = await this.plugin.app.vault.adapter.list(localDir);
         const files: { path: string; mtime: number }[] = [];
 
         for (const file of list.files) {
-            if (file.endsWith('.zip')) {
+            if (this.backupPattern.test(file)) {
                 const stat = await this.plugin.app.vault.adapter.stat(file);
                 if (stat) files.push({ path: file, mtime: stat.mtime });
             }
