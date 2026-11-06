@@ -2,6 +2,7 @@ import { Notice } from 'obsidian';
 import { zipSync } from 'fflate';
 import type CryptDriveSync from './main.ts';
 import { T } from './i18n.ts';
+import { PathSanitizer } from './sanitizer.ts';
 
 interface RemoteEntry {
     mtime: number;
@@ -22,14 +23,12 @@ export class BackupManager {
         this.plugin = plugin;
     }
 
-    /**
-     * Enforces a leading dot on the backup folder path to ensure regular vault
-     * sync engine (src/main.ts) automatically ignores it (seg.startsWith('.')).
-     */
     private getBackupFolder(): string {
-        const raw = (this.plugin.settings.localBackupFolder || '.backups').trim();
-        const cleaned = raw.replace(/^\/+/, ''); // Strip leading slashes
-        return cleaned.startsWith('.') ? cleaned : `.${cleaned}`;
+        return PathSanitizer.sanitizeLocalBackupFolder(this.plugin.settings.localBackupFolder);
+    }
+
+    private getRemoteBackupPath(): string {
+        return this.plugin.getRemoteSubsystemPath('_backups');
     }
 
     async createBackup(): Promise<void> {
@@ -83,13 +82,13 @@ export class BackupManager {
             const crypt = await p.getCrypt();
             if (!crypt) throw new Error(T.needPassword);
 
-            const remote = await p.remote(false);
+            const remote = await p.remote(false, '_backups');
             if (!remote) throw new Error('Remote storage unavailable');
 
             const mtime = Date.now();
             const filename = `backup-${this.timestamp()}.zip`;
-            const tmpPath = `${localDir}/${filename}.tmp`;
-            const finalPath = `${localDir}/${filename}`;
+            const tmpPath = `${filename}.tmp`;
+            const finalPath = filename;
 
             // Staged upload as .tmp first
             const entry = await (remote as unknown as RemoteStorage).write(tmpPath, zipBuffer, mtime);
@@ -122,16 +121,12 @@ export class BackupManager {
         return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
     }
 
-    private async pruneRemoteBackups(remote: RemoteStorage, maxCount: number): Promise<void> {
-        const localDir = this.getBackupFolder();
+        private async pruneRemoteBackups(remote: RemoteStorage, maxCount: number): Promise<void> {
         const listRes = await remote.list();
         const backupFiles: { path: string; mtime: number }[] = [];
 
         for (const [path, entry] of listRes.files.entries()) {
-            if (
-                (path.startsWith(`${localDir}/`) || path.startsWith('backups/') || path.startsWith('_backups/')) &&
-                this.backupPattern.test(path)
-            ) {
+            if (this.backupPattern.test(path)) {
                 backupFiles.push({ path, mtime: entry.mtime });
             }
         }

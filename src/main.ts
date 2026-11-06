@@ -11,6 +11,7 @@ import type { Action, Plan } from './sync.ts';
 import type { BaseEntry, LocalEntry, LocalFs, RemoteEntry } from './types.ts';
 import { SetupWizard } from './wizard.ts';
 import { BackupManager } from './backup.ts'; // added backup feature AI CODE
+import { PathSanitizer } from './sanitizer.ts'; // 
 
 // Secrets live in Obsidian's SecretStorage: per device, never in the vault.
 // Keys are namespaced per vault (see sid()): SecretStorage is app-wide, and each vault may use its own password/sign-in.
@@ -37,6 +38,23 @@ export default class CryptDriveSync extends Plugin {
 	private editedDuringSync = false;
 	private createRoot = false; // user confirmed creating a missing crypt root (this session)
 	backupManager = new BackupManager(this); //added backup feature AI CODE
+
+    /**
+    * Resolves the structured remote path for a given subsystem ('vaults', '_backups', '_deleted').
+    * Example output: 'obsidian-sync/_backups/my-vault'
+    */
+        getRemoteSubsystemPath(subsystem: 'vaults' | '_backups' | '_deleted'): string {
+        const root = PathSanitizer.sanitizeRootPath(this.settings.rootPath);
+        const vaultName = PathSanitizer.sanitizeVaultName(this.settings.folder, this.app.vault.getName());
+        return `${root}/${subsystem}/${vaultName}`;
+    }
+
+    /**
+    * Returns the remote path dedicated strictly to active vault note sync.
+    */
+    getRemoteVaultPath(): string {
+    return this.getRemoteSubsystemPath('vaults');
+    }
 
 	async onload() {
 		setLanguage(getLanguage());
@@ -277,19 +295,35 @@ export default class CryptDriveSync extends Plugin {
 		}
 		if (secret) this.storeSecret(CLIENT_SECRET_ID, secret);
 	}
-    // removed private to access it AI CODE EDIT
-	async remote(report = true): Promise<CryptDriveFs | undefined> {
-		const s = this.settings;
-		const missing = !this.hasClient() ? T.needClient : !this.isLoggedIn() ? T.needLogin : !this.secret(PASSWORD_ID) ? T.needPassword : '';
-		if (missing) {
-			if (report) this.finish(T.notConfigured(missing), true);
-			return undefined;
-		}
-		const c = this.client();
-		const auth = new GoogleAuth(req, c.id, c.secret, this.secret(TOKEN_ID));
-		const crypt = (await this.getCrypt())!;
-		return new CryptDriveFs(new DriveClient(req, auth), crypt, { rootPath: s.rootPath, folder: s.folder, trashDir: s.trashDir, createRoot: this.createRoot, dirNameEncrypt: s.dirNameEncrypt }, (n) => Crypt.decryptedSize(n));
-	}
+    // rewritten
+        async remote(report = true, subsystem: 'vaults' | '_backups' | '_deleted' = 'vaults'): Promise<CryptDriveFs | undefined> {
+        const s = this.settings;
+        const missing = !this.hasClient() ? T.needClient : !this.isLoggedIn() ? T.needLogin : !this.secret(PASSWORD_ID) ? T.needPassword : '';
+        if (missing) {
+            if (report) this.finish(T.notConfigured(missing), true);
+            return undefined;
+        }
+        const c = this.client();
+        const auth = new GoogleAuth(req, c.id, c.secret, this.secret(TOKEN_ID));
+        const crypt = (await this.getCrypt())!;
+        
+        // Scope folder to the requested subsystem (e.g., 'vaults/film_db' or '_backups/film_db')
+        const vaultName = PathSanitizer.sanitizeVaultName(s.folder, this.app.vault.getName());
+        const remoteSubFolder = `${subsystem}/${vaultName}`;
+
+        return new CryptDriveFs(
+            new DriveClient(req, auth),
+            crypt,
+            {
+                rootPath: s.rootPath,
+                folder: remoteSubFolder,
+                trashDir: s.trashDir,
+                createRoot: this.createRoot,
+                dirNameEncrypt: s.dirNameEncrypt
+            },
+            (n) => Crypt.decryptedSize(n)
+        );	
+    }
 
 	private client(): { id: string; secret: string } {
 		const id = this.settings.clientId.trim();
