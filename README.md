@@ -1,5 +1,7 @@
 CODE **EDITED** BY AI
 
+# Google Drive+
+
 This is a fork of [crypt-drive-sync](https://github.com/mooncodee/crypt-drive-sync)
 
 Added:
@@ -18,7 +20,7 @@ Backups can be also kept locally on your device. If you want to keep backups **o
 
 Auto-clean. You can choose how many snapshots to keep from 1 to 10. When you exceed snapshot limit then the oldest by date snapshot will be removed on google drive. If you keep snapshots locally, they will be cleaned up too in the same way.
 
-# Crypt Drive Sync
+## Crypt Drive Sync
 
 Sync your Obsidian vault across all your devices — Mac, Windows, Linux, iPhone, iPad, Android — through **your own Google Drive**, with **end-to-end encryption**. Google stores only encrypted files: no note names, no text.
 
