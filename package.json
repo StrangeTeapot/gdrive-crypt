@@ -1,6 +1,6 @@
 {
-	"name": "crypt-drive-sync",
-	"version": "0.1.1",
+	"name": "Google Drive+",
+	"version": "0.1",
 	"private": true,
 	"main": "main.js",
 	"type": "module",
@@ -26,6 +26,7 @@
 	},
 	"dependencies": {
 		"@noble/ciphers": "2.4.0",
-		"@noble/hashes": "2.4.0"
+		"@noble/hashes": "2.4.0",
+		"fflate": "^0.8.3"
 	}
 }
