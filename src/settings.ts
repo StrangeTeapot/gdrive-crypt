@@ -19,6 +19,10 @@ export interface Settings {
 	confirmPlan: boolean;
 	deviceName: string;
 	wizardDone: boolean;
+	backupEnabled: boolean;
+    maxBackups: number;
+    backupKeepLocal: boolean;
+    localBackupFolder: string;
 }
 
 // Defaults: a dedicated root folder, no password2, encrypted folder names (rclone crypt defaults).
@@ -38,6 +42,10 @@ export const DEFAULTS: Settings = {
 	confirmPlan: false,
 	deviceName: '',
 	wizardDone: false,
+	backupEnabled: true,
+    maxBackups: 5,
+    backupKeepLocal: false,
+    localBackupFolder: '_backups',
 };
 
 // Changing any of these points the plugin at a different remote → forget sync state.
@@ -52,11 +60,12 @@ export class CryptDriveSyncSettingTab extends PluginSettingTab {
 		this.icon = 'refresh-cw';
 	}
 
-	async setControlValue(key: string, value: unknown): Promise<void> {
-		await super.setControlValue(key, value);
-		if (RESETS_STATE.has(key)) await this.plugin.resetState();
-		if (key === 'clientId') this.plugin.logout(); // the token belongs to the old client
-	}
+async setControlValue(key: string, value: unknown): Promise<void> {
+    await super.setControlValue(key, value);
+    if (RESETS_STATE.has(key)) await this.plugin.resetState();
+    if (key === 'clientId') this.plugin.logout(); // the token belongs to the old client
+    if (key === 'afterEditSec' || key === 'intervalMin') this.plugin.refreshTimers();
+}
 
 	/** Password-style input stored in SecretStorage; saved on blur/Enter, never shown back. */
 	private secretInput(s: Setting, id: string, placeholder: string) {
@@ -172,6 +181,16 @@ export class CryptDriveSyncSettingTab extends PluginSettingTab {
 							{ name: T.trashName, desc: T.trashDesc, control: { type: 'text', key: 'trashDir', validate: notEmpty } },
 						],
 					},
+					{
+    type: 'group',
+    heading: T.hBackup,
+    items: [
+        { name: T.backupEnabledName, desc: T.backupEnabledDesc, control: { type: 'toggle', key: 'backupEnabled' } },
+        { name: T.maxBackupsName, desc: T.maxBackupsDesc, control: { type: 'number', key: 'maxBackups', min: 1, max: 10, step: 1 } },
+        { name: T.keepLocalName, desc: T.keepLocalDesc, control: { type: 'toggle', key: 'backupKeepLocal' } },
+        { name: T.localFolderDesc, desc: T.localFolderDesc, control: { type: 'text', key: 'localBackupFolder', validate: notEmpty } },
+    ],
+},
 					{
 						type: 'group',
 						heading: T.hMaintenance,

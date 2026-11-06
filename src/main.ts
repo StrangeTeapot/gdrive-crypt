@@ -10,6 +10,7 @@ import { apply, plan } from './sync.ts';
 import type { Action, Plan } from './sync.ts';
 import type { BaseEntry, LocalEntry, LocalFs, RemoteEntry } from './types.ts';
 import { SetupWizard } from './wizard.ts';
+import { BackupManager } from './backup.ts';
 
 // Secrets live in Obsidian's SecretStorage: per device, never in the vault.
 // Keys are namespaced per vault (see sid()): SecretStorage is app-wide, and each vault may use its own password/sign-in.
@@ -35,6 +36,7 @@ export default class CryptDriveSync extends Plugin {
 	private editTimer = 0;
 	private editedDuringSync = false;
 	private createRoot = false; // user confirmed creating a missing crypt root (this session)
+	backupManager = new BackupManager(this);
 
 	async onload() {
 		setLanguage(getLanguage());
@@ -67,24 +69,38 @@ export default class CryptDriveSync extends Plugin {
 			if (!this.ready()) {
 				if (!this.settings.wizardDone) this.openWizard(); // first run: guide instead of failing silently
 			} else if (this.settings.syncOnStart) void this.sync({ quiet: true });
-			const onEdit = () => {
-				if (!this.settings.afterEditSec) return;
-				if (this.running) {
-					this.editedDuringSync = true; // our own writes land here too; costs one extra no-op sync
-					return;
-				}
-				window.clearTimeout(this.editTimer);
-				this.editTimer = window.setTimeout(() => void this.sync({ quiet: true }), this.settings.afterEditSec * 1000);
-			};
+const onEdit = () => {
+    const sec = Number(this.settings.afterEditSec);
+    if (!sec || sec <= 0) return;
+    if (this.running) {
+        this.editedDuringSync = true;
+        return;
+    }
+    window.clearTimeout(this.editTimer);
+    this.editTimer = window.setTimeout(() => void this.sync({ quiet: true }), sec * 1000);
+};
 			for (const ev of ['create', 'modify', 'delete', 'rename'] as const) this.registerEvent(this.app.vault.on(ev as 'create', onEdit));
 		});
 		this.registerInterval(window.setInterval(() => {
 			const min = this.settings.intervalMin;
 			if (min > 0 && Date.now() - this.lastSyncAt >= min * 60_000) void this.sync({ quiet: true });
 		}, 60_000));
-		this.registerDomEvent(document, 'visibilitychange', () => {
-			if (document.visibilityState === 'visible' && Date.now() - this.lastSyncAt > 60_000) void this.sync({ quiet: true });
-		});
+this.registerDomEvent(document, 'visibilitychange', () => {
+    const min = Number(this.settings.intervalMin);
+    if (min > 0 && document.visibilityState === 'visible' && Date.now() - this.lastSyncAt >= min * 60_000) {
+        void this.sync({ quiet: true });
+    }
+});
+		this.addCommand({
+            id: 'create-backup',
+            name: T.cmdBackup,
+            callback: () => void this.backupManager.createBackup(),
+        });
+	}
+
+refreshTimers(): void {
+		window.clearTimeout(this.editTimer);
+		this.editTimer = 0;
 	}
 
 	onunload() {
@@ -150,10 +166,11 @@ export default class CryptDriveSync extends Plugin {
 		} finally {
 			this.running = false;
 			if (again) void this.sync(opts);
-			if (this.editedDuringSync && this.settings.afterEditSec) {
-				window.clearTimeout(this.editTimer);
-				this.editTimer = window.setTimeout(() => void this.sync({ quiet: true }), this.settings.afterEditSec * 1000);
-			}
+const editSec = Number(this.settings.afterEditSec);
+if (this.editedDuringSync && editSec > 0) {
+    window.clearTimeout(this.editTimer);
+    this.editTimer = window.setTimeout(() => void this.sync({ quiet: true }), editSec * 1000);
+}
 		}
 	}
 
@@ -223,7 +240,7 @@ export default class CryptDriveSync extends Plugin {
 		if (key === PASSWORD_ID || key === SALT_ID) await this.resetState();
 	}
 
-	private async getCrypt(): Promise<Crypt | undefined> {
+	async getCrypt(): Promise<Crypt | undefined> {
 		const password = this.secret(PASSWORD_ID);
 		if (!password) return undefined;
 		const salt = this.secret(SALT_ID);
@@ -255,7 +272,7 @@ export default class CryptDriveSync extends Plugin {
 		if (secret) this.storeSecret(CLIENT_SECRET_ID, secret);
 	}
 
-	private async remote(report = true): Promise<CryptDriveFs | undefined> {
+	async remote(report = true): Promise<CryptDriveFs | undefined> {
 		const s = this.settings;
 		const missing = !this.hasClient() ? T.needClient : !this.isLoggedIn() ? T.needLogin : !this.secret(PASSWORD_ID) ? T.needPassword : '';
 		if (missing) {
