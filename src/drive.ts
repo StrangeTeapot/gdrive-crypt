@@ -249,10 +249,10 @@ export class CryptDriveFs implements RemoteFs {
 	private listed = false; // after list(), `files` is complete: missing = new file
     private pendingFolderCleanup = new Set<string>();
 
-	constructor(drive: DriveClient, crypt: CryptLike, cfg: CryptDriveConfig, decryptedSize: (encSize: number) => number) {
+        constructor(drive: DriveClient, crypt: CryptLike, cfg: CryptDriveConfig, decryptedSize: (encSize: number) => number) {
 		const norm = (p: string) => p.split('/').filter(Boolean).join('/');
 		this.drive = drive; this.crypt = crypt; this.decryptedSize = decryptedSize;
-		this.cfg = { rootPath: norm(cfg.rootPath), folder: norm(cfg.folder), trashDir: norm(cfg.trashDir) };
+		this.cfg = { rootPath: norm(cfg.rootPath), folder: norm(cfg.folder), trashDir: norm(cfg.trashDir), createRoot: cfg.createRoot };
 	}
 
      /**
@@ -315,26 +315,29 @@ export class CryptDriveFs implements RemoteFs {
 	}
 			
 
-	async list(): Promise<{ files: Map<string, RemoteEntry>; warnings: string[] }> {
+        async list(): Promise<{ files: Map<string, RemoteEntry>; warnings: string[] }> {
 		this.dirs.clear(); this.files.clear(); this.listed = false;
 		const files = new Map<string, RemoteEntry>();
 		const warnings: string[] = [];
 		const root = this.cfg.rootPath.split('/').filter(Boolean);
-		// drive.file sees only this Cloud project's files: a missing root means wrong path or wrong OAuth client.
-		// Don't silently create a second root folder.
-		const rootId = await this.dirId(root, false);
+		const top = this.loc('_').dir;
+
+		let rootId = await this.dirId(root, false);
 		if (!rootId) {
-			if (this.cfg.createRoot) return { files: new Map(), warnings: [] }; // write() creates it
-			throw new RootMissingError(this.cfg.rootPath);
+			if (this.cfg.createRoot) {
+				// Create rootPath and inner encrypted vault folder immediately
+				await this.dirId(top, true);
+				rootId = await this.dirId(root, false);
+			}
+			if (!rootId) {
+				throw new RootMissingError(this.cfg.rootPath);
+			}
 		}
-		// Wrong key → the vault folder's encrypted name differs → "not found" → we'd upload everything into a
-		// parallel folder. So: a non-empty crypt root where nothing decrypts is a wrong key, not a fresh setup.
-		// With plain folder names (dirNameEncrypt=false) a wrong key is still caught in walk() on the first file name.
+
 		const children = this.cfg.dirNameEncrypt === false ? [] : await this.drive.list(rootId);
 		if (children.length && !children.some((c) => { try { this.crypt.decryptPath(c.name); return true; } catch { return false; } })) {
 			throw new Error("can't decrypt names in the crypt root — wrong password, salt or folder-name encryption setting");
 		}
-		const top = this.loc('_').dir; // encryptPath treats the last segment as a file name; a dummy one leaves the folder segments right
 		const id = await this.dirId(top, false);
 		if (id) await this.walk(id, '', [], files, warnings);
 		this.listed = true;
