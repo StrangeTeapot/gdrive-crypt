@@ -10,6 +10,8 @@ Added:
 - Local save of snapshot (optional)
 
 ## Backups/snapshots
+Friendly reminder that any dot folder will not be synced.
+
 Use command pallete CTRL+P and search for "create encrypted backup now"
 
 It is an additional feature that can be activated **only manually** by using command pallete.
@@ -26,6 +28,7 @@ Sync your Obsidian vault across all your devices — Mac, Windows, Linux, iPhone
 
 The encryption format is [rclone crypt](https://rclone.org/crypt/), so your synced vault is also readable, checkable and restorable with plain `rclone` on any computer — no lock-in to this plugin.
 
+## Readme of [original plugin crypt-drive-sync](https://github.com/mooncodee/crypt-drive-sync)
 ## Features
 
 - Works inside Obsidian on every platform, including mobile. No server, no extra app.
