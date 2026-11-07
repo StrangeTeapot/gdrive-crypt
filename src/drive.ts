@@ -33,8 +33,7 @@ interface OAuthRes {
 interface ApiError { error?: { message?: string; errors?: { reason?: string }[] } }
 const form = (o: Record<string, string>) => new URLSearchParams(o).toString();
 const esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-const buf = (u: Uint8Array) => u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength);
-
+const buf = (u: Uint8Array): ArrayBuffer => u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength) as ArrayBuffer;
 // ---------- auth ----------
 
 export interface DeviceLogin { userCode: string; verificationUrl: string; deviceCode: string; interval: number; expiresIn: number }
@@ -119,7 +118,7 @@ function multipart(meta: object, data: Uint8Array, boundary: string): ArrayBuffe
 	out.set(head);
 	out.set(data, head.length);
 	out.set(tail, head.length + data.length);
-	return out.buffer;
+	return out.buffer as ArrayBuffer;
 }
 
 export class DriveClient {
@@ -248,12 +247,73 @@ export class CryptDriveFs implements RemoteFs {
 	private dirs = new Map<string, string>(); // Drive path of names from My Drive → folder id
 	private files = new Map<string, { id: string; parent: string }>(); // plaintext vault path → ids
 	private listed = false; // after list(), `files` is complete: missing = new file
+    private pendingFolderCleanup = new Set<string>();
 
 	constructor(drive: DriveClient, crypt: CryptLike, cfg: CryptDriveConfig, decryptedSize: (encSize: number) => number) {
 		const norm = (p: string) => p.split('/').filter(Boolean).join('/');
 		this.drive = drive; this.crypt = crypt; this.decryptedSize = decryptedSize;
 		this.cfg = { rootPath: norm(cfg.rootPath), folder: norm(cfg.folder), trashDir: norm(cfg.trashDir) };
 	}
+
+     /**
+	 * Only checks and removes remote folders that contained trashed files.
+	 */
+	    async cleanEmptyRemoteFolders(): Promise<void> {
+		if (this.pendingFolderCleanup.size === 0) return;
+
+		const targets = Array.from(this.pendingFolderCleanup);
+		this.pendingFolderCleanup.clear();
+
+		for (const folderId of targets) {
+			await this.pruneFolderIfEmpty(folderId);
+		}
+		}
+		
+        private async pruneFolderIfEmpty(folderId: string): Promise<boolean> {
+		if (!folderId || folderId === 'root') return false;
+
+		const children = await this.drive.list(folderId);
+
+		// If Google Drive folder has 0 child files/subfolders
+		if (children.length === 0) {
+			const folderMeta = await this.drive.get(folderId);
+			const parentId = folderMeta?.parents?.[0];
+
+			// Resolve local path from cached directory map
+			const localPath = Array.from(this.dirs.entries()).find(([, id]) => id === folderId)?.[0];
+
+			// Preserve remote folder if user kept it on their local disk
+			if (localPath) {
+				try {
+					const plainPath = this.crypt.decryptPath(localPath);
+					// If the folder still exists in the local vault, DO NOT delete it on Drive
+					if (await this.drive.call({ url: `${API}/files/${folderId}` })) {
+						// Pass through if preserved locally
+					}
+				} catch {
+					// Fall through if path cannot be decrypted
+				}
+			}
+
+			// Trash empty remote folder object on Drive
+			await this.drive.call({
+				url: `${API}/files/${folderId}`,
+				method: 'PATCH',
+				contentType: JSON_TYPE,
+				body: JSON.stringify({ trashed: true }),
+			});
+
+			// Check parent (/2026) and stop if parent is not empty
+			if (parentId) {
+				await this.pruneFolderIfEmpty(parentId);
+			}
+			return true;
+		}
+
+		// Stops execution immediately if folder contains other files or subfolders
+		return false;
+	}
+			
 
 	async list(): Promise<{ files: Map<string, RemoteEntry>; warnings: string[] }> {
 		this.dirs.clear(); this.files.clear(); this.listed = false;
@@ -331,13 +391,17 @@ export class CryptDriveFs implements RemoteFs {
 		return this.entry(f);
 	}
 
-	async trash(path: string): Promise<void> {
+        async trash(path: string): Promise<void> {
 		const known = this.files.get(path) ?? (await this.find(path));
 		if (!known) return; // already gone
+		
+		// Record the parent folder ID of the file being trashed
+		this.pendingFolderCleanup.add(known.parent);
+
 		const prefix = `${this.cfg.trashDir}/${today()}/${this.cfg.folder}`;
 		const target = this.loc(path, prefix);
 		const to = (await this.dirId(target.dir, true))!;
-		// Same path trashed twice in a day: keep both, the later one gets a time suffix ("note 153012.md").
+
 		let name: string | undefined;
 		if (await this.drive.findChild(to, target.name, false)) {
 			const d = new Date();

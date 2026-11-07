@@ -141,7 +141,7 @@ export default class CryptDriveSync extends Plugin {
 		try {
 			const remote = await this.remote(!opts.quiet); // background triggers stay silent until set up
 			if (!remote) return;
-			const local = new VaultFs(this.app);
+			const local = new VaultFs(this);
 			const [l, r] = await Promise.all([local.list(), remote.list()]);
 			const warnings = [...r.warnings, ...this.filter(l, r.files)];
 			const opts1 = { minDeleteCount: MIN_DELETE_COUNT, maxDeletePct: this.settings.maxDeletePct };
@@ -149,7 +149,8 @@ export default class CryptDriveSync extends Plugin {
 			p.warnings.unshift(...warnings);
 			p.warnings.forEach((w) => this.log(`⚠ ${w}`));
 
-			if (opts.dryRun) {
+            if (opts.dryRun) {
+				this.finish(T.planTitle, false); // Fixes Bug 3: Clears status bar spinning animation
 				await new PlanModal(this.app, p, false).ask();
 				return;
 			}
@@ -176,6 +177,15 @@ export default class CryptDriveSync extends Plugin {
 				onProgress: (done, total) => this.setStatus(`${T.statusRunning} ${done}/${total}`, T.statusTip(this.lastResult), true),
 				log: (m) => this.log(m),
 			});
+
+// Prune local empty directories left behind after file trashes
+			await local.cleanEmptyFolders();
+
+			// Safe invoke for remote empty folder pruning on Drive
+			if (remote && typeof (remote as any).cleanEmptyRemoteFolders === 'function') {
+				await (remote as any).cleanEmptyRemoteFolders();
+			}
+			
 			const n = (t: Action['type']) => p.actions.filter((a) => a.type === t).length;
 			const parts = T.summary(n('upload'), n('download'));
 			if (n('trashRemote') + n('trashLocal')) parts.push(T.sumTrashed(n('trashRemote') + n('trashLocal')));
@@ -202,13 +212,24 @@ export default class CryptDriveSync extends Plugin {
 	 * Excludes, dotfiles and size limit. A path skipped on EITHER side is dropped from BOTH,
 	 * so it becomes `forget` (never a trash): a file that outgrew the limit must not be deleted elsewhere.
 	 */
-	private filter(l: Map<string, LocalEntry>, r: Map<string, RemoteEntry>): string[] {
-		const ex = globs(this.settings.exclude);
+        private filter(l: Map<string, LocalEntry>, r: Map<string, RemoteEntry>): string[] {
+		const ex = this.settings.useRawRegex 
+			? parseRawRegex(this.settings.exclude) 
+			: globs(this.settings.exclude);
+
+		const localBackupFolder = PathSanitizer.sanitizeLocalBackupFolder(this.settings.localBackupFolder);
 		const max = this.settings.maxFileMb * 1024 * 1024;
 		const warnings: string[] = [];
+
 		for (const path of new Set([...l.keys(), ...r.keys()])) {
+			// Always protect local backup directory from recursive sync loops
+			const isLocalBackup = path === localBackupFolder || path.startsWith(`${localBackupFolder}/`);
+			
+			// Block dot-folders ONLY if syncDotFolders toggle is disabled
+			const isDotFolder = !this.settings.syncDotFolders && path.split('/').some((seg) => seg.startsWith('.'));
 			const big = (l.get(path)?.size ?? 0) > max || (r.get(path)?.size ?? 0) > max;
-			if (path.split('/').some((seg) => seg.startsWith('.')) || ex.some((g) => g.test(path)) || big) {
+
+			if (isLocalBackup || isDotFolder || ex.some((g) => g.test(path)) || big) {
 				l.delete(path);
 				r.delete(path);
 				if (big) warnings.push(T.tooBig(this.settings.maxFileMb, path));
@@ -463,28 +484,75 @@ export default class CryptDriveSync extends Plugin {
  * mtime/size always come from adapter.stat — the same source in list(), stat() and after write(), so base converges
  * even if the vault cache lags or the OS ignores the requested mtime.
  */
-class VaultFs implements LocalFs {
-	private app: App;
-	private real = new Map<string, string>(); // NFC path → real path (files and folders)
 
-	constructor(app: App) {
-		this.app = app;
+/**
+ * LocalFs over the Vault API & File Adapter.
+ */
+class VaultFs implements LocalFs {
+	private plugin: CryptDriveSync;
+	private app: App;
+	private real = new Map<string, string>();
+
+	constructor(plugin: CryptDriveSync) {
+		this.plugin = plugin;
+		this.app = plugin.app;
 	}
 
 	private path(p: string): string {
 		return this.real.get(p) ?? p;
 	}
 
-	async list(): Promise<Map<string, LocalEntry>> {
+	    async list(): Promise<Map<string, LocalEntry>> {
 		const out = new Map<string, LocalEntry>();
 		this.real.clear();
-		for (const f of this.app.vault.getAllLoadedFiles()) if (f.path !== '/') this.real.set(f.path.normalize('NFC'), f.path);
-		// ponytail: one adapter.stat per file per sync (~ms each on iOS); fine for thousands of notes.
-		for (const f of this.app.vault.getFiles()) {
-			const e = await this.stat(f.path.normalize('NFC'));
-			if (e) out.set(f.path.normalize('NFC'), e);
+
+		if (this.plugin.settings.syncDotFolders) {
+			// Direct disk scan via adapter to discover dot-folders (.obsidian, etc.)
+			await this.scanAdapter('', out);
+		} else {
+			for (const f of this.app.vault.getAllLoadedFiles()) if (f.path !== '/') this.real.set(f.path.normalize('NFC'), f.path);
+			for (const f of this.app.vault.getFiles()) {
+				const e = await this.stat(f.path.normalize('NFC'));
+				if (e) out.set(f.path.normalize('NFC'), e);
+			}
 		}
 		return out;
+	}
+
+	private async scanAdapter(dir: string, out: Map<string, LocalEntry>): Promise<void> {
+		const list = await this.app.vault.adapter.list(dir);
+		for (const file of list.files) {
+			const nfc = file.normalize('NFC');
+			this.real.set(nfc, file);
+			const st = await this.stat(nfc);
+			if (st) out.set(nfc, st);
+		}
+		for (const folder of list.folders) {
+			await this.scanAdapter(folder, out);
+		}
+	}
+
+	/**
+	 * Recursively removes empty directories on disk after file deletions.
+	 */
+	async cleanEmptyFolders(dir = ''): Promise<boolean> {
+		const list = await this.app.vault.adapter.list(dir);
+		let isEmpty = true;
+
+		for (const folder of list.folders) {
+			const subIsEmpty = await this.cleanEmptyFolders(folder);
+			if (subIsEmpty) {
+				await this.app.vault.adapter.rmdir(folder, false).catch(() => {});
+			} else {
+				isEmpty = false;
+			}
+		}
+
+		if (list.files.length > 0) {
+			isEmpty = false;
+		}
+
+		return isEmpty && dir !== '';
 	}
 
 	async stat(path: string): Promise<LocalEntry | undefined> {
@@ -527,8 +595,6 @@ class VaultFs implements LocalFs {
 
 	async trash(path: string): Promise<void> {
 		const f = this.file(path);
-		// Obeys Obsidian's "Deleted files" setting. Safety net is remote: the deleting device already moved
-		// the cloud copy to <trashDir>/<date>/, and Drive keeps revisions for 30 days.
 		if (f) await this.app.fileManager.trashFile(f);
 	}
 }
@@ -553,6 +619,23 @@ export function globs(text: string): RegExp[] {
 		const re = g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*/g, '\0').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]').replace(/\0/g, '.*');
 		return new RegExp(`^${re}(/|$)`);
 	});
+}
+
+/** Parses multi-line user input into an array of compiled JavaScript RegExp objects. */
+export function parseRawRegex(text: string): RegExp[] {
+	return text
+		.split('\n')
+		.map((s) => s.trim())
+		.filter(Boolean)
+		.map((pattern) => {
+			try {
+				return new RegExp(pattern);
+			} catch (e) {
+				console.warn(`[CryptDriveSync] Invalid exclusion regex pattern: ${pattern}`);
+				return null;
+			}
+		})
+		.filter((r): r is RegExp => r !== null);
 }
 
 class TextModal extends Modal {

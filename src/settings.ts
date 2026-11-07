@@ -24,6 +24,8 @@ export interface Settings {
     maxBackups: number;
     backupKeepLocal: boolean;
     localBackupFolder: string;
+	syncDotFolders: boolean;
+	useRawRegex: boolean;
 }
 
 // Defaults: a dedicated root folder, no password2, encrypted folder names (rclone crypt defaults).
@@ -48,6 +50,8 @@ export const DEFAULTS: Settings = {
     maxBackups: 5,
     backupKeepLocal: false,
     localBackupFolder: 'backups',
+	syncDotFolders: false,
+	useRawRegex: false,
 };
 
 // Changing any of these points the plugin at a different remote → forget sync state.
@@ -158,20 +162,30 @@ async setControlValue(key: string, value: unknown): Promise<void> {
 				name: T.advancedName,
 				desc: T.advancedDesc,
 				items: [
-					{
-						type: 'group',
-						heading: T.hSync,
-						items: [
-							{ name: T.onStartName, desc: T.onStartDesc, control: { type: 'toggle', key: 'syncOnStart' } },
-							{ name: T.intervalName, desc: T.intervalDesc, control: { type: 'number', key: 'intervalMin', min: 0, step: 1 } },
-							{ name: T.afterEditName, desc: T.afterEditDesc, control: { type: 'number', key: 'afterEditSec', min: 0, step: 1 } },
-							{ name: T.excludeName, desc: T.excludeDesc, control: { type: 'textarea', key: 'exclude', rows: 4, placeholder: 'Private/**\n**/*.mp4' } },
-							{ name: T.maxSizeName, desc: T.maxSizeDesc, control: { type: 'number', key: 'maxFileMb', min: 1, step: 1 } },
-							{ name: T.massDeleteName, desc: T.massDeleteDesc, control: { type: 'number', key: 'maxDeletePct', min: 1, max: 100, step: 1 } },
-							{ name: T.confirmPlanName, desc: T.confirmPlanDesc, control: { type: 'toggle', key: 'confirmPlan' } },
-							{ name: T.deviceName, desc: T.deviceDesc, control: { type: 'text', key: 'deviceName', placeholder: p.defaultDeviceName() } },
-						],
-					},
+{
+	type: 'group',
+	heading: T.hSync,
+	items: [
+		{ name: T.onStartName, desc: T.onStartDesc, control: { type: 'toggle', key: 'syncOnStart' } },
+		{ name: T.intervalName, desc: T.intervalDesc, control: { type: 'number', key: 'intervalMin', min: 0, step: 1 } },
+		{ name: T.afterEditName, desc: T.afterEditDesc, control: { type: 'number', key: 'afterEditSec', min: 0, step: 1 } },
+		{ name: T.excludeName, desc: T.excludeDesc, control: { type: 'textarea', key: 'exclude', rows: 4, placeholder: 'Private/**\n**/*.mp4' } },
+		{ 
+			name: 'Use raw Regex for exclusion', 
+			desc: 'Interpret exclude patterns as raw JavaScript regular expressions instead of glob wildcards.', 
+			control: { type: 'toggle', key: 'useRawRegex' } 
+		},
+		{ 
+			name: 'Sync dot-folders (Experimental)', 
+			desc: 'Allow hidden directories (e.g. .obsidian) to sync. Warning: May cause platform layout/plugin setting collisions across devices.', 
+			control: { type: 'toggle', key: 'syncDotFolders' } 
+		},
+		{ name: T.maxSizeName, desc: T.maxSizeDesc, control: { type: 'number', key: 'maxFileMb', min: 1, step: 1 } },
+		{ name: T.massDeleteName, desc: T.massDeleteDesc, control: { type: 'number', key: 'maxDeletePct', min: 1, max: 100, step: 1 } },
+		{ name: T.confirmPlanName, desc: T.confirmPlanDesc, control: { type: 'toggle', key: 'confirmPlan' } },
+		{ name: T.deviceName, desc: T.deviceDesc, control: { type: 'text', key: 'deviceName', placeholder: p.defaultDeviceName() } },
+	],
+},
 					{
 						type: 'group',
 						heading: T.hCrypt,
