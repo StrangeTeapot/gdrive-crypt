@@ -52,7 +52,7 @@ Local Obsidian Vault ──> [ Client-Side Encryption ] ──> Google Drive (dr
 
 ### Remote Directory Tree & Data Layout
 
-#### Single-Vault Structure (`rootPath: obsidian-crypt`)
+#### Single-Vault Structure (`rootPath: my-crypted-obsidian`)
 ```text
 
 
