@@ -34,6 +34,8 @@ Because the encryption format strictly adheres to Rclone standards, your vault c
 
 * **Platform Native:** Operates seamlessly across desktop and mobile platforms inside Obsidian.
 * **Bilingual Support:** Interface available in English and Russian (matches Obsidian system settings). Interface and all the text related to features that were introduced in this fork are auto-translated.
+* **Sync your plugins and themes!** Use "Sync dot-folder" toggle in advanced options. **Can break multi device sync! Read guide first**
+* **Customisable notes/folders sync** via glob pattern or RegE strings (optional, advanced settings)
 
 ---
 
@@ -245,6 +247,64 @@ npm run build
 ### Pre-Baking Client Credentials (Optional)
 
 For private custom builds, place your Google Cloud OAuth JSON file (`google-client.json`) in the project root next to `package.json` before running `npm run build`. The build script will embed the client credentials into `main.js`, allowing users of your build to skip manual OAuth app creation.
+
+---
+## Cheat sheet
+### Glob pattern exlcude sync files
+|**Pattern**|**Scope**|**Example**|**Result**|
+|---|---|---|---|
+|`**/*.ext`|Everywhere|`**/*.mp4`|Ignores all `.mp4` video files anywhere in the vault|
+|`Folder/**`|Vault Root|`Private/**`|Ignores the `Private/` folder and everything inside it|
+|`**/Folder/**`|Subdirectories|`**/Archive/**`|Ignores any folder named `Archive` at any depth|
+|`**/file.ext`|Specific File|`**/config.json`|Ignores any file named `config.json` anywhere in the vault|
+|`*.tmp`|Root Only|`*.tmp`|Ignores `.tmp` files located only at the vault root|
+
+#### Common examples
+```plaintext
+# Media & Heavy Files
+**/*.mp4
+**/*.mkv
+**/*.pdf
+
+# Private & Work-in-Progress Folders
+Private/**
+**/Drafts/**
+**/Personal/**
+
+# Temporary & Cache Files
+**/*.tmp
+**/*.bak
+**/*.DS_Store
+```
+### RegEx strings/pattern
+|**Pattern**|**Scope**|**Example**|**Result**|
+|---|---|---|---|
+|`\.ext$`|File Extension|`\.mp4$`|Ignores all `.mp4` files anywhere in the vault|
+|`^Folder/`|Root Directory|`^Private/`|Ignores the `Private/` folder strictly at the vault root|
+|`/Folder/`|Directory Anywhere|`/Drafts/`|Ignores any directory named `Drafts` at any path depth|
+|`/(A\|B)/`|Multiple Alternatives|`/(Temp\|Cache)/`|Ignores any directory named `Temp` or `Cache`|
+|`^\.` or `/\.`|Hidden Files / Dot-Folders|`^\.`|Ignores dot-files and dot-folders (e.g., `.obsidian`)|
+|`(?i)\.ext$`|Case-Insensitive|`(?i)\.(jpg\|png)$`|Ignores `.jpg`, `.JPG`, `.png`, `.PNG` files|
+
+#### Common examples
+```text
+# Media & Heavy Binary Archives
+\.(mp4|mkv|avi|mov|zip|tar\.gz)$
+
+# Root Directories Only
+^Private/
+^LocalOnly/
+
+# Directories at Any Depth
+/(Drafts|Templates|Cache|Node_modules)/
+
+# Specific File Names Anywhere
+(^|/)desktop\.ini$
+(^|/)\.DS_Store$
+
+# Case-Insensitive Extensions
+(?i)\.(png|jpg|jpeg|gif|pdf)$
+```
 
 ---
 
