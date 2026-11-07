@@ -91,7 +91,7 @@ export class BackupManager {
             const finalPath = filename;
 
             // Staged upload as .tmp first
-            const entry = await (remote as unknown as RemoteStorage).write(tmpPath, zipBuffer, mtime);
+            const entry = await remote.write(tmpPath, zipBuffer, mtime);
 
             // 4. Verification Check
             if (!entry || entry.size !== zipBuffer.byteLength) {
@@ -100,11 +100,11 @@ export class BackupManager {
 
             // 5. Promote staged .tmp file to final path
             await (remote as unknown as RemoteStorage).write(finalPath, zipBuffer, mtime);
-            await (remote as unknown as RemoteStorage).trash(tmpPath);
+            await remote.trash(tmpPath);
             p.log(`Verified and stored remote backup: ${finalPath}`);
 
             // 6. Safe Rotation: Prune old remote backups ONLY after verification succeeds
-            await this.pruneRemoteBackups(remote as unknown as RemoteStorage, Math.min(Math.max(p.settings.maxBackups, 1), 10));
+            await this.pruneRemoteBackups(remote, Math.min(Math.max(p.settings.maxBackups, 1), 10));
 
             new Notice(T.backupSuccess);
             p.log('Vault backup completed successfully.');

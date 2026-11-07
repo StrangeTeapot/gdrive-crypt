@@ -49,3 +49,28 @@
 .cds-steps li {
 	margin-bottom: var(--size-4-2);
 }
+
+/* ==========================================================================
+   Mobile & iOS Modal Viewport / Keyboard Fixes
+   ========================================================================== */
+
+.modal.cds-wizard-modal {
+	max-height: 85vh;
+	max-height: 85dvh;
+	display: flex;
+	flex-direction: column;
+}
+
+.modal.cds-wizard-modal .modal-content {
+	overflow-y: auto !important;
+	-webkit-overflow-scrolling: touch;
+	padding-bottom: 160px; /* Extra bottom clearance for virtual keyboard */
+}
+
+/* Ensure native touch selection & paste context menu on mobile webviews */
+.cds-wizard-modal input[type="text"],
+.cds-wizard-modal input[type="password"],
+.cds-wizard-modal textarea {
+	-webkit-user-select: text !important;
+	user-select: text !important;
+}

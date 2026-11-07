@@ -182,8 +182,8 @@ export default class CryptDriveSync extends Plugin {
 			await local.cleanEmptyFolders();
 
 			// Safe invoke for remote empty folder pruning on Drive
-			if (remote && typeof (remote as any).cleanEmptyRemoteFolders === 'function') {
-				await (remote as any).cleanEmptyRemoteFolders();
+			if (remote) {
+				await remote.cleanEmptyRemoteFolders();
 			}
 			
 			const n = (t: Action['type']) => p.actions.filter((a) => a.type === t).length;
@@ -630,7 +630,7 @@ export function parseRawRegex(text: string): RegExp[] {
 		.map((pattern) => {
 			try {
 				return new RegExp(pattern);
-			} catch (e) {
+			} catch {
 				console.warn(`[CryptDriveSync] Invalid exclusion regex pattern: ${pattern}`);
 				return null;
 			}

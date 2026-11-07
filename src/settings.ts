@@ -177,7 +177,7 @@ async setControlValue(key: string, value: unknown): Promise<void> {
 		},
 		{ 
 			name: 'Sync dot-folders (Experimental)', 
-			desc: 'Allow hidden directories (e.g. .obsidian) to sync. Warning: May cause platform layout/plugin setting collisions across devices.', 
+			desc: `Allow hidden directories (e.g. ${this.plugin.app.vault.configDir}) to sync. Warning: May cause platform layout/plugin setting collisions across devices.`, 
 			control: { type: 'toggle', key: 'syncDotFolders' } 
 		},
 		{ name: T.maxSizeName, desc: T.maxSizeDesc, control: { type: 'number', key: 'maxFileMb', min: 1, step: 1 } },

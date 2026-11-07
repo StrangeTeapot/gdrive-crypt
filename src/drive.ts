@@ -118,7 +118,7 @@ function multipart(meta: object, data: Uint8Array, boundary: string): ArrayBuffe
 	out.set(head);
 	out.set(data, head.length);
 	out.set(tail, head.length + data.length);
-	return out.buffer as ArrayBuffer;
+	return out.buffer;
 }
 
 export class DriveClient {
@@ -285,7 +285,7 @@ export class CryptDriveFs implements RemoteFs {
 			// Preserve remote folder if user kept it on their local disk
 			if (localPath) {
 				try {
-					const plainPath = this.crypt.decryptPath(localPath);
+					this.crypt.decryptPath(localPath);
 					// If the folder still exists in the local vault, DO NOT delete it on Drive
 					if (await this.drive.call({ url: `${API}/files/${folderId}` })) {
 						// Pass through if preserved locally

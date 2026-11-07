@@ -25,6 +25,7 @@ export class SetupWizard extends Modal {
 	}
 
 	onOpen() {
+		this.modalEl.addClass('cds-wizard-modal');
 		this.render();
 	}
 
@@ -32,6 +33,22 @@ export class SetupWizard extends Modal {
 		this.contentEl.empty();
 		void this.plugin.markWizardDone();
 		this.onDone();
+	}
+
+	/**
+	 * Configures inputs to auto-scroll into view on focus and blur keyboard on Enter (iOS friendly).
+	 */
+	private setupInput(inputEl: HTMLInputElement) {
+		inputEl.addEventListener('focus', () => {
+			window.setTimeout(() => {
+				inputEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+			}, 300);
+		});
+		inputEl.addEventListener('keydown', (e: KeyboardEvent) => {
+			if (e.key === 'Enter') {
+				inputEl.blur();
+			}
+		});
 	}
 
 	private go(i: number) {
@@ -79,11 +96,15 @@ export class SetupWizard extends Modal {
 			let id = p.settings.clientId;
 			let secret = '';
 			const hasSecret = !!p.secret(CLIENT_SECRET_ID);
-			new Setting(el).setName(T.clientIdName).addText((t) => t.setPlaceholder('1234…apps.googleusercontent.com').setValue(id).onChange((v) => { id = v.trim(); }));
+			new Setting(el).setName(T.clientIdName).addText((t) => {
+				t.setPlaceholder('1234…apps.googleusercontent.com').setValue(id).onChange((v) => { id = v.trim(); });
+				this.setupInput(t.inputEl);
+			});
 			new Setting(el).setName(T.clientSecretName).addText((t) => {
 				t.inputEl.type = 'password';
 				t.setPlaceholder(hasSecret ? T.wizPasswordKeep : 'GOCSPX-…');
 				t.onChange((v) => { secret = v.trim(); });
+				this.setupInput(t.inputEl);
 			});
 			this.nav({
 				label: T.wizNext,
@@ -109,9 +130,15 @@ export class SetupWizard extends Modal {
 			let root = p.settings.rootPath;
 			let folder = p.settings.folder;
 			new Setting(el).setName(T.wizRootName).setDesc(T.wizRootDesc)
-				.addText((t) => t.setValue(root).onChange((v) => { root = v.trim(); }));
+				.addText((t) => {
+					t.setValue(root).onChange((v) => { root = v.trim(); });
+					this.setupInput(t.inputEl);
+				});
 			new Setting(el).setName(T.wizFolderName).setDesc(T.wizFolderDesc)
-				.addText((t) => t.setValue(folder).onChange((v) => { folder = v.trim(); }));
+				.addText((t) => {
+					t.setValue(folder).onChange((v) => { folder = v.trim(); });
+					this.setupInput(t.inputEl);
+				});
 			this.nav({
 				label: T.wizNext,
 				enabled: true,
@@ -140,6 +167,7 @@ export class SetupWizard extends Modal {
 					t.inputEl.type = 'password';
 					t.setPlaceholder(has ? T.wizPasswordKeep : T.passwordPlaceholder);
 					t.onChange((v) => { value = v; });
+					this.setupInput(t.inputEl);
 				})
 				.addButton((b) => b.setButtonText(T.wizSaveCheck).onClick(async () => {
 					if (value) await p.setSecret(PASSWORD_ID, value);
