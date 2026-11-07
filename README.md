@@ -1,155 +1,258 @@
-CODE **EDITED** BY AI
+CODE EDITED BY AI
+
+FORK OF [crypt-drive-sync by mooncodee](https://github.com/mooncodee/crypt-drive-sync)
 
 # Google Drive+
 
-This is a fork of [crypt-drive-sync](https://github.com/mooncodee/crypt-drive-sync)
+End-to-end encrypted Obsidian vault synchronization for Google Drive across Desktop (Windows, macOS, Linux) and Mobile (iOS, Android).
 
-Added:
-- Snapshot / backup feature
-- History of snapshots with auto-clean (1 to 10 snapshots)
-- Local save of snapshot (optional)
+CryptDriveSync performs pre-upload encryption on your device using the **Rclone crypt** standard (`XSalsa20-Poly1305` for file content and `AES-EME` for file/folder names with key derivation via `scrypt`). Google Drive stores only scrambled data—no note names, folder structures, or text are ever readable by third parties.
 
-## Backups/snapshots
-Friendly reminder that any dot folder will not be synced.
+Because the encryption format strictly adheres to Rclone standards, your vault can be accessed, verified, or restored on any system using standard `rclone` commands without plugin lock-in.
 
-Use command pallete CTRL+P and search for "create encrypted backup now"
+---
 
-It is an additional feature that can be activated **only manually** by using command pallete.
-Creates a full snapshot/backup of your vault and uploads it to _backups folder by default inside your vault folder.
-Backup is a zip archive named with date/timestamp. **Archive is not encrypted** by default. During a setup use encrypted/passworded rclone vault folder, therefore your archive will be encrypted inside sync folder. Backup folder and snapshots can be accsessed via rclone, rclone gui or any other compatiable software. 
+## Features & Enhancements
 
-Backups can be also kept locally on your device. If you want to keep backups **only locally** then use a dot folder, for example change default _backup to .backup
+* **Rclone-Compatible Encryption:** Full client-side zero-knowledge encryption prior to upload.
+* **Vault Snapshots & Automated Backup Rotation:**
+* Trigger manual unencrypted or crypt-stored full vault backups directly from the Obsidian Command Palette (`CTRL+P` / `CMD+P`).
+* Auto-clean history keeping between 1 to 10 rolling snapshots (purges oldest backups automatically on Drive and locally).
+* Flexible storage: save backups to remote folders (e.g., `_backups`) and/or local-only dot folders (e.g., `.backups`).
 
-Auto-clean. You can choose how many snapshots to keep from 1 to 10. When you exceed snapshot limit then the oldest by date snapshot will be removed on google drive. If you keep snapshots locally, they will be cleaned up too in the same way.
 
-## Crypt Drive Sync
+* **Nested Root Directory & Multi-Vault Support:**
+* Define nested root paths on Google Drive (e.g., `backups/my-crypted-obsidian` or `folder1/folder2`).
+* Automatic parent directory creation (`createRoot` support)—no manual folder pre-creation on Drive required.
+* Multi-vault mapping cleanly isolates individual vaults in separate crypt paths.
 
-Sync your Obsidian vault across all your devices — Mac, Windows, Linux, iPhone, iPad, Android — through **your own Google Drive**, with **end-to-end encryption**. Google stores only encrypted files: no note names, no text.
 
-The encryption format is [rclone crypt](https://rclone.org/crypt/), so your synced vault is also readable, checkable and restorable with plain `rclone` on any computer — no lock-in to this plugin.
+* **Security & Privacy First:**
+* Uses your own personal Google Cloud OAuth Client ID under the restricted `drive.file` scope. The plugin can only access files and folders it creates.
+* Direct device-to-Google API communication with zero telemetry, zero analytics, and no intermediate servers.
 
-## Readme of [original plugin crypt-drive-sync](https://github.com/mooncodee/crypt-drive-sync)
-## Features
 
-- Works inside Obsidian on every platform, including mobile. No server, no extra app.
-- Encryption happens on your device before anything is sent. The password never leaves the device.
-- Your own Google Cloud client: no shared app, no third party between you and Google.
-- Guided setup with links for every step: create the client, sign in, choose a password, pick a folder.
-- Safe by design:
-  - a conflict keeps **both** versions;
-  - deletions go to a dated trash folder in the cloud, never deleted for good;
-  - the first sync only merges;
-  - a sync that would delete many files stops and asks;
-  - a wrong password stops sync instead of creating a second, unreadable copy.
-- English and Russian interface (follows Obsidian's language).
+* **Platform Native:** Operates seamlessly across desktop and mobile platforms inside Obsidian.
+* **Bilingual Support:** Interface available in English and Russian (matches Obsidian system settings). Interface and all the text related to features that were introduced in this fork are auto-translated.
 
-## Disclosures
+---
 
-- **Network use.** The plugin connects to Google only:
-  - `oauth2.googleapis.com` — to sign in and refresh the sign-in;
-  - `www.googleapis.com` — Google Drive API, to store and read your encrypted files.
+## How It Works
 
-  Signing in opens `google.com/device` in your browser, where you paste the code. There are no other servers, no analytics, no telemetry.
-- **Account required.** You need a Google account (a free one works; storage counts toward your Google quota) and your own free Google Cloud OAuth client (created once in about five minutes; the plugin walks you through it).
-- **Access scope.** The plugin requests `drive.file`: it can see only files it created itself. The rest of your Google Drive is invisible to it.
+```text
+Local Obsidian Vault ──> [ Client-Side Encryption ] ──> Google Drive (drive.file scope)
+                               │                                │
+                        (scrypt + XSalsa20)              (Scrambled Blob)
+                               │                                │
+                               └──────── Supported By ──────────┘
+                                        Rclone Crypt CLI / GUI
+```
 
-- **Vault access.** To sync, the plugin lists and reads every file in the vault (except dot-files such as `.obsidian`) and writes files it downloads. Nothing outside the vault is touched.
-- **Clipboard.** The plugin only *writes* to the clipboard: the Google sign-in code, when you press “Copy code and open Google”. It never reads the clipboard.
+### Remote Directory Tree & Data Layout
 
-Privacy policy: <https://mooncodee.github.io/crypt-drive-sync/privacy.html>
+#### Single-Vault Structure (`rootPath: obsidian-crypt`)
+```text
 
-Release builds are produced by GitHub Actions from this repository and carry [build provenance attestations](https://github.com/mooncodee/crypt-drive-sync/attestations): `gh attestation verify main.js -R mooncodee/crypt-drive-sync`.
 
-## How it works
+Google Drive (My Drive)
+└── my-crypted-obsidian/                      <-- Plaintext Root Path (Visible on Drive UI)
+    ├── _backups/                             <-- Vault Snapshot Storage Directory
+    │   ├── Vault1/                           <-- Dedicated Backup Directory for Vault 1
+    │       └── 2026-11-07_12-00-00_vault1.zip
+    ├── _deleted/                             <-- Cloud Retention Trash
+    │   ├── 2026-11-02_a8b9f1...              <-- Encrypted deleted files (safeguard against loss)
+    │   └── 2026-11-04_c3d4e5...
+    └── vaults/                               <-- Plaintext Vaults Container
+        └── MyVault/                          <-- Dedicated Vault Directory
+            ├── 7f9a2b1c4e8d...               <-- Scrambled folder name (e.g., "Projects")
+            │   └── 3d5e7f1a9b2c...           <-- Scrambled note name (e.g., "Ideas.md")
+            └── e4f5a6b7c8d9...               <-- Scrambled note name (e.g., "Index.md")
+```
 
-1. Notes are encrypted on the device with a key derived from your password:
-   - file contents with XSalsa20-Poly1305;
-   - file and folder names with AES-EME;
-   - the key comes from scrypt — exactly as rclone crypt does it.
-2. Encrypted files go to a folder in your Google Drive (default `crypt-drive-sync/`).
-3. Each device remembers what it last synced and compares three states — this device, the cloud, the last sync — to decide what to upload, download, or move to trash.
+#### Multi-Vault Structure (`vault1`: `my-crypted-obsidian/vault1` | `vault2`: `my-crypted-obsidian/vault2`)
 
-Your password and Google sign-in are kept in Obsidian's secret storage on each device, separately for each vault. They are never synced and never sent anywhere. **The password cannot be recovered** — without it the encrypted notes cannot be read.
+```text
+Google Drive (My Drive)
+└── my-crypted-obsidian/                      <-- Plaintext Root Path
+    ├── _backups/                             <-- Vault Snapshot Storage Directory
+    │   ├── Vault1/                           <-- Dedicated Backup Directory for Vault 1
+    │   │   └── 2026-11-07_12-00-00_vault1.zip
+    │   └── Vault2/                           <-- Dedicated Backup Directory for Vault 2
+    │       └── 2026-11-07_12-05-00_vault2.zip
+    ├── _deleted/                             <-- Cloud Retention Trash
+    │   ├── 2026-11-02_a8b9f1...
+    │   └── 2026-11-04_c3d4e5...
+    └── vaults/                               <-- Plaintext Vaults Container
+        ├── Vault1/                           <-- Dedicated Directory for Vault 1
+        │   ├── 7f9a2b1c4e8d...               <-- Scrambled files for Vault 1
+        │   └── e4f5a6b7c8d9...
+        └── Vault2/                           <-- Dedicated Directory for Vault 2
+            ├── 9x8y7z6w5v4u...               <-- Scrambled files for Vault 2
+            └── 3t2s1r0q9p8o...
+```
 
-## Install
+## Installation
 
-- **Community plugins:** Settings → Community plugins → Browse → search “Crypt Drive Sync”.
-- **Manual:** copy `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/mooncodee/crypt-drive-sync/releases) into `<vault>/.obsidian/plugins/crypt-drive-sync/`.
+### Community Plugins
 
-## Set up
+1. Open **Obsidian Settings** => **Community plugins**.
+2. Click **Browse** and search for **Google Drive+**.
+3. Click **Install**, then **Enable**.
 
-Enable the plugin — the setup wizard opens by itself. Allow about ten minutes the first time and two on each next device:
+### Manual Installation
 
-1. **Google Cloud client.** Google requires every app to have its own OAuth client, so you create one for yourself. It's free, takes about five minutes, and the wizard links each step:
-   - create a project and enable the Google Drive API;
-   - if Google shows “Get started”, fill it in first (app name, your email, External);
-   - fill in Branding: any app name, your email, and homepage and privacy-policy links — any public pages work, e.g. the plugin's [homepage](https://mooncodee.github.io/crypt-drive-sync/) and [privacy policy](https://mooncodee.github.io/crypt-drive-sync/privacy.html);
-   - on Audience, press **Publish app** — otherwise Google expires the sign-in every 7 days. Publishing doesn't make it public: only you know the client ID;
-   - create a client of type **TVs and Limited Input devices** and copy its ID and secret.
-2. **Sign in** — the code is copied for you and `google.com/device` opens in your browser; paste the code and press Allow.
-3. **Where to store** — a folder in your Google Drive (default `crypt-drive-sync`) and the vault's name inside it (default: the vault's name).
-4. **Password** — encrypts your notes; checked against the cloud right away. Then the first sync, which only merges.
+1. Download `main.js`, `manifest.json`, and `styles.css` from the latest release release assets.
+2. Create a folder named `gdrive-crypt-red` inside your vault's plugin directory: `<vault>/.obsidian/plugins/gdrive-crypt-red/`.
+3. Copy the downloaded files into that directory and restart Obsidian.
 
-On every other device: install the plugin and go through the same steps with **the same client, password and folder name**.
+---
 
-Sync then runs by itself:
-- on startup;
-- every 10 minutes;
-- 30 seconds after an edit;
-- when you return to the app (its window becomes visible again).
+## Setup Guide
 
-The ↻ ribbon button and the status bar item sync immediately.
+Setting up requires a one-time configuration of your own free Google Cloud OAuth Client ID (takes approximately 5 minutes).
 
-## Using it with rclone
+### Step 1: Create a Google Cloud OAuth Client
 
-If you already use an rclone crypt remote on Google Drive, the plugin can share it. Example config:
+1. Open the [Google Cloud Console](https://console.cloud.google.com/) and create a new project.
+2. Enable the **Google Drive API** in the API Library.
+3. Configure the **OAuth Consent Screen**:
+* Select **External** user type.
+* Enter your app name and contact email under Branding.
+* Under **Audience**, click **Publish App** (publishing prevents your OAuth token from expiring every 7 days; only your Client ID will have access).
+
+
+4. Go to **Credentials** $\rightarrow$ **Create Credentials** $\rightarrow$ **OAuth client ID**.
+5. Select **TVs and Limited Input devices** as the Application Type, then copy your generated **Client ID** and **Client Secret**.
+
+### Step 2: Configure the Plugin
+
+1. Open **Obsidian Settings** $\rightarrow$ **Google Drive+**.
+2. Input your **Client ID** and **Client Secret**.
+3. Click **Sign In**—the plugin copies your auth code and opens `[google.com/device](https://google.com/device)`. Paste the code and click **Allow**.
+4. Set your folder storage paths:
+* **Root Path (`rootPath`):** Target Google Drive directory (e.g., `my-crypted-obsidian` or nested paths like `apps/obsidian/vault`).
+* **Vault Folder (`folder`):** Target subfolder name inside the crypt root (default: your vault name).
+
+
+5. Set your **Encryption Password** and **Salt**.
+
+> **Important:** Your password and salt are stored in Obsidian's secret storage on your local device. They are never transmitted. **Lost passwords cannot be recovered.**
+
+---
+
+## Vault Snapshots & Backup Rotation
+
+The plugin includes a manual vault snapshot engine designed for creating point-in-time archives of your vault.
+
+### Triggering a Snapshot
+
+1. Press `CTRL+P` (or `CMD+P` on macOS) to open the Command Palette.
+2. Search for **"create encrypted backup now"** and press `Enter`.
+3. The plugin generates a zip archive named with the current timestamp and places it in your designated backup directory (default: `_backups`).
+
+### Configurable Rotation & Local Storage
+
+* **Snapshot Retention (1 to 10):** Configure the maximum snapshot count in settings. When the limit is reached, the oldest snapshot on Google Drive (or locally) is automatically deleted.
+* **Local-Only Backups:** To keep backups on your local device without syncing them to Google Drive. Also the plugin automatically ignores all dot-folders during normal cloud sync.
+* **Encryption Notice:** The archive itself is a standard zip file. When synced to Google Drive through an encrypted root path, it is encrypted on-the-fly like all other vault contents.
+
+---
+
+## Rclone Integration & Multi-Vault Setup
+
+Because Google Drive+ uses standard Rclone crypt formatting, you can mount, browse, or sync your vault using Rclone CLI or Rclone GUI.
+
+### Standard Single Vault `rclone.conf`
 
 ```ini
-[drive]
+[gdrive]
 type = drive
 scope = drive.file
-client_id = <your client id>
-client_secret = <your client secret>
+client_id = <YOUR_GOOGLE_CLIENT_ID>
+client_secret = <YOUR_GOOGLE_CLIENT_SECRET>
 
-[crypt]
+[crypted]
 type = crypt
-remote = drive:encrypted
-password = <obscured>
-```
-
-Set up the plugin with:
-- **Where to store → Folder in Google Drive:** `encrypted`;
-- **Encryption password:** the same password as the crypt remote.
-
-The vault then appears as `crypt:<vault name>`. Check it with:
+remote = gdrive:my-crypted-obsidian
+filename_encoding = base32
+password = <YOUR_OBSCURED_PASSWORD>
+password2 = <YOUR_OBSCURED_SALT> 
 
 ```
-rclone cryptcheck <local vault> crypt:<vault name>
+
+### Multi-Vault / Nested Path Setup
+
+If you manage multiple vaults or place a vault inside a nested directory (e.g., `rootPath = my-crypted-obsidian/vault2`), configure dedicated crypt remotes for each vault in `rclone.conf`:
+
+```ini
+[gdrive]
+type = drive
+scope = drive.file
+client_id = <YOUR_GOOGLE_CLIENT_ID>
+client_secret = <YOUR_GOOGLE_CLIENT_SECRET>
+
+# Remote for Vault 1 (Root: my-crypted-obsidian)
+[vault1-crypt]
+type = crypt
+remote = gdrive:my-crypted-obsidian
+password = <YOUR_OBSCURED_PASSWORD>
+password2 = <YOUR_OBSCURED_SALT>
+
+# Remote for Vault 2 (Root: my-crypted-obsidian/vault2)
+[vault2-crypt]
+type = crypt
+remote = gdrive:my-crypted-obsidian/vault2
+password = <YOUR_OBSCURED_PASSWORD>
+password2 = <YOUR_OBSCURED_SALT>
+
 ```
 
-Google's `drive.file` scope is per Google Cloud project, so the plugin can see a folder created by your rclone only if both use the same project: create the plugin's “TVs and Limited Input devices” client in your rclone's project.
+### Important `drive.file` Scope Rules
 
-## Limitations
+1. **Shared Client ID Required:** Under Google's restricted `drive.file` scope, Rclone can only view files created by the plugin if both Rclone and the plugin use the **exact same OAuth Client ID**.
+2. **Uploading via Rclone:** Always use `rclone copy` rather than `rclone move` when pushing files to Google Drive. An `rclone copy` generates new server-side objects under your Client ID, ensuring the plugin retains permission to manage them.
+3. **Directory Visibility:** In raw Google Drive view (`gdrive:`), root path folders (e.g., `my-crypted-obsidian` and `vault2`) appear in plaintext so navigation paths can resolve. All contents inside those folders are fully encrypted. Opening the crypt remotes (`vault1-crypt:` or `vault2-crypt:`) automatically decrypts the directory contents on the fly via rclone gui or compatiable.
 
-- Not real-time: sync runs on the triggers above (mobile apps are suspended in the background).
-- Files over 50 MB are skipped by default: on mobile a file must fit in memory. The limit is configurable.
-- A rename syncs as delete + create (the old name goes to the cloud trash).
-- Obsidian's own settings folder (`.obsidian`) and other dot-files are not synced.
+---
 
-## Removing the plugin
+## Security & Disclosures
 
-The password, the Google sign-in and the client secret live in Obsidian's secret storage, which uninstalling a plugin doesn't clear. First choose **Advanced → Reset setup on this device**, then uninstall. Revoke access at [myaccount.google.com/permissions](https://myaccount.google.com/permissions); delete the plugin's folder in Google Drive to remove the encrypted copy.
+* **Network Traffic:** The plugin communicates exclusively with official Google API endpoints:
+* `oauth2.googleapis.com` — OAuth token authentication and refreshes.
+* `[www.googleapis.com](https://www.googleapis.com)` — Google Drive API v3 operations.
 
-## Build from source
 
-```
+* **Scope Isolation:** Requests only `[https://www.googleapis.com/auth/drive.file](https://www.googleapis.com/auth/drive.file)`. The plugin has zero visibility or access to the rest of your Google Drive.
+* **Vault Isolation:** Access is strictly bounded to the active Obsidian vault directory. Dot-folders (such as `.obsidian` or `.backups`) are excluded from general cloud sync.
+* **Clipboard Interaction:** The plugin only writes to the system clipboard when copying the device sign-in code during initial setup. It never reads clipboard data.
+
+---
+
+## Building from Source
+
+```bash
+# Install dependencies
 npm install
-npm test          # includes byte-for-byte compatibility tests against real rclone (run tests/make-fixtures.sh once)
+
+# Run byte-for-byte rclone compatibility tests
+npm test
+
+# Build production bundle
 npm run build
+
 ```
 
-Optional, for private builds only: place `google-client.json` (the JSON downloaded for a “TVs and Limited Input devices” client) next to `package.json` to bake that client in, so the people you give the build to can skip step 1. It is never part of the repository, and public releases are built without it.
+### Pre-Baking Client Credentials (Optional)
 
-## License
+For private custom builds, place your Google Cloud OAuth JSON file (`google-client.json`) in the project root next to `package.json` before running `npm run build`. The build script will embed the client credentials into `main.js`, allowing users of your build to skip manual OAuth app creation.
 
-[MIT](LICENSE)
+---
+
+## License & Acknowledgements
+
+This project is licensed under the [MIT License](https://www.google.com/search?q=LICENSE).
+
+**Upstream Credits:**
+Forked and extended from [crypt-drive-sync](https://github.com/mooncodee/crypt-drive-sync) by [mooncodee](https://github.com/mooncodee).
+
+Source code was butchered by me and free AI models.
