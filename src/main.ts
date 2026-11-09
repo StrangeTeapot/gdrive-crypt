@@ -166,9 +166,11 @@ async sync(opts: { quiet?: boolean; dryRun?: boolean } = {}): Promise<void> {
 				}
 				p = { ...plan(l, r.files, base, { minDeleteCount: Infinity, maxDeletePct: 100 }), warnings: p.warnings };
 			}
-			if (!p.actions.length) {
+            if (!p.actions.length) {
 				await this.saveBase();
-				this.finish(T.noChanges, !opts.quiet);
+				const hasWarn = p.warnings.length > 0;
+				const msg = hasWarn ? `${T.noChanges} (${p.warnings.length} warning(s) — see log)` : T.noChanges;
+				this.finish(msg, !opts.quiet || hasWarn, false, hasWarn);
 				return;
 			}
 
@@ -190,12 +192,14 @@ async sync(opts: { quiet?: boolean; dryRun?: boolean } = {}): Promise<void> {
 			this.remoteFilesCache = remote.getFilesCache();
 			await this.saveBase(currentLocalDirs);
 
-			const n = (t: Action['type']) => p.actions.filter((a) => a.type === t).length;
+            const n = (t: Action['type']) => p.actions.filter((a) => a.type === t).length;
 			const parts = T.summary(n('upload'), n('download'));
 			if (n('trashRemote') + n('trashLocal')) parts.push(T.sumTrashed(n('trashRemote') + n('trashLocal')));
 			if (res.conflicts.length) parts.push(T.sumConflicts(res.conflicts.length));
 			if (res.errors.length) parts.push(T.sumErrors(res.errors.length));
-			this.finish(parts.join(', '), true);
+			if (p.warnings.length) parts.push(`${p.warnings.length} warning(s) (see log)`);
+			const hasWarn = p.warnings.length > 0 || res.errors.length > 0;
+			this.finish(parts.join(', '), true, res.errors.length > 0, hasWarn);
 		} catch (e) {
 			if (e instanceof RootMissingError && !opts.dryRun && (await this.askCreateRoot())) again = true;
 			else this.finish(T.error(humanError(e)), true, true);
@@ -230,16 +234,24 @@ async sync(opts: { quiet?: boolean; dryRun?: boolean } = {}): Promise<void> {
 		return warnings;
 	}
 
-	private finish(msg: string, notify: boolean, failed = false) {
+private finish(msg: string, notify: boolean, failed = false, hasWarnings = false) {
 		this.lastSyncAt = Date.now();
 		this.lastResult = `${new Date().toLocaleString()}: ${msg}`;
 		this.log(msg);
 		if (failed) console.error(`crypt-drive-sync: ${msg}`);
+
 		this.setStatus(
-			failed ? T.statusError : T.statusOk(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
+			failed || hasWarnings ? T.statusError : T.statusOk(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
 			T.statusTip(this.lastResult),
 		);
-		if (notify) new Notice(`${T.noticePrefix}: ${msg}`);
+
+		if (failed || hasWarnings) {
+			// Center-screen blocking window modal (iOS, Android, Windows, Mac, Linux)
+			new AlertModal(this.app, T.noticePrefix, msg).open();
+		} else if (notify) {
+			// Toast notification for clean syncs
+			new Notice(`${T.noticePrefix}: ${msg}`);
+		}
 	}
 
 	private setStatus(text: string, tip: string, running = false) {
@@ -658,6 +670,31 @@ export function parseRawRegex(text: string): RegExp[] {
 			}
 		})
 		.filter((r): r is RegExp => r !== null);
+}
+
+class AlertModal extends Modal {
+	private message: string;
+
+	constructor(app: App, title: string, message: string) {
+		super(app);
+		this.setTitle(title);
+		this.message = message;
+	}
+
+	onOpen() {
+		const el = this.contentEl;
+		el.createEl('p', { text: this.message, cls: 'cds-pre-line' });
+		new Setting(el).addButton((b) =>
+			b
+				.setButtonText(T.close)
+				.setCta()
+				.onClick(() => this.close()),
+		);
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
 }
 
 class TextModal extends Modal {
