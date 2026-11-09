@@ -33,25 +33,110 @@ export function plan(
 	opts: PlanOptions,
 ): Plan {
 	const warnings: string[] = [];
-
-	// A.md vs a.md: one file on macOS/iOS, two on Drive → leave them alone.
-	const byLower = new Map<string, Set<string>>();
-	for (const p of [...local.keys(), ...remote.keys()]) {
-		const k = p.toLowerCase();
-		byLower.set(k, (byLower.get(k) ?? new Set<string>()).add(p));
-	}
-	const skip = new Set<string>();
-	for (const group of byLower.values()) {
-		if (group.size < 2) continue;
-		for (const p of group) skip.add(p);
-		warnings.push(T.caseCollision([...group].join(', ')));
-	}
-
 	const actions: Action[] = [];
-	for (const path of new Set([...local.keys(), ...remote.keys(), ...base.keys()])) {
-		if (skip.has(path)) continue;
-		const type = decide(local.get(path), remote.get(path), base.get(path));
-		if (type) actions.push({ type, path });
+	const skip = new Set<string>();
+
+	const canonical = (p: string) => p.normalize('NFC').toLowerCase();
+
+	// 1. Group entries by canonical path for each side
+	const groupByCanon = <T>(map: Map<string, T>) => {
+		const byCanon = new Map<string, { path: string; entry: T }[]>();
+		for (const [path, entry] of map.entries()) {
+			const k = canonical(path);
+			const list = byCanon.get(k) ?? [];
+			list.push({ path, entry });
+			byCanon.set(k, list);
+		}
+		return byCanon;
+	};
+
+	const localCanon = groupByCanon(local);
+	const remoteCanon = groupByCanon(remote);
+
+	// 2. Intra-side collision detection (multiple distinct files on the SAME side with same canonical name)
+	for (const [, list] of localCanon.entries()) {
+		if (list.length > 1) {
+			const paths = list.map((item) => item.path);
+			paths.forEach((p) => skip.add(p));
+			warnings.push(`Naming collision on this device: [${paths.join(', ')}]. Please rename one to resume sync.`);
+		}
+	}
+	for (const [, list] of remoteCanon.entries()) {
+		if (list.length > 1) {
+			const paths = list.map((item) => item.path);
+			paths.forEach((p) => skip.add(p));
+			warnings.push(`Naming collision on Google Drive: [${paths.join(', ')}]. Please rename one to resume sync.`);
+		}
+	}
+
+	// 3. Process canonical keys across local, remote, and base
+const allCanonKeys = new Set<string>([
+		...localCanon.keys(),
+		...remoteCanon.keys(),
+		...Array.from(base.keys()).map(canonical),
+	]);
+
+	for (const k of allCanonKeys) {
+		const lItem = localCanon.get(k)?.[0];
+		const rItem = remoteCanon.get(k)?.[0];
+		
+		// Find matching base entry by canonical key
+		let bPath: string | undefined;
+		let b: BaseEntry | undefined;
+		for (const [bp, be] of base.entries()) {
+			if (canonical(bp) === k) {
+				bPath = bp;
+				b = be;
+				break;
+			}
+		}
+
+		if (lItem && skip.has(lItem.path)) continue;
+		if (rItem && skip.has(rItem.path)) continue;
+
+		const l = lItem?.entry;
+		const r = rItem?.entry;
+		const lPath = lItem?.path;
+		const rPath = rItem?.path;
+
+		if (l && r) {
+			// Both local and remote exist under this canonical key
+			const lc = !b || l.mtime !== b.mtime || l.size !== b.size || (bPath !== undefined && lPath !== bPath);
+			const rc = !b || r.md5 !== b.md5 || (bPath !== undefined && rPath !== bPath);
+
+			if (lc && rc && lPath !== rPath) {
+				// Case mismatch and both modified -> conflict
+				actions.push({ type: 'conflict', path: lPath! });
+			} else if (lc || lPath !== rPath) {
+				// Local changed or local has a new case -> upload local version and trash old remote case
+				actions.push({ type: 'upload', path: lPath! });
+				if (rPath && rPath !== lPath) {
+					actions.push({ type: 'trashRemote', path: rPath });
+				}
+			} else if (rc) {
+				// Remote changed -> download remote version
+				actions.push({ type: 'download', path: rPath! });
+			}
+		} else if (l) {
+			// Present locally, absent remotely
+			const lc = !b || l.mtime !== b.mtime || l.size !== b.size;
+			if (!b || lc) {
+				actions.push({ type: 'upload', path: lPath! });
+			} else {
+				actions.push({ type: 'trashLocal', path: lPath! });
+			}
+		} else if (r) {
+			// Present remotely, absent locally
+			const rc = !b || r.md5 !== b.md5;
+			if (!b || rc) {
+				actions.push({ type: 'download', path: rPath! });
+			} else {
+				actions.push({ type: 'trashRemote', path: rPath! });
+			}
+		} else if (bPath) {
+			// Deleted on both sides
+			actions.push({ type: 'forget', path: bPath });
+		}
 	}
 
 	let blocked: string | undefined;

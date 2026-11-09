@@ -48,18 +48,20 @@ export class BackupManager {
             const filesToZip: Record<string, Uint8Array> = {};
             const loadedFiles = p.app.vault.getFiles();
 
-            for (const file of loadedFiles) {
-                // Ignore backup directories and auto-generated backup-YYYYMMDD-HHMMSS.zip files
+for (const file of loadedFiles) {
+                const normPath = file.path.normalize('NFC');
+                // Ignore backup directories and auto-generated backup ZIP files
                 if (
-                    file.path.startsWith(localDir) ||
-                    file.path.startsWith('_backups') ||
-                    file.path.startsWith('backups') ||
-                    this.backupPattern.test(file.path)
+                    normPath === localDir ||
+                    normPath.startsWith(`${localDir}/`) ||
+                    normPath.startsWith('_backups/') ||
+                    normPath.startsWith('backups/') ||
+                    this.backupPattern.test(normPath)
                 ) {
                     continue;
                 }
                 const data = new Uint8Array(await p.app.vault.readBinary(file));
-                filesToZip[file.path] = data;
+                filesToZip[normPath] = data;
             }
 
             const zipBuffer = zipSync(filesToZip);

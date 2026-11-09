@@ -1,8 +1,9 @@
-import { Modal, Notice, Platform, Plugin, Setting, getLanguage, normalizePath, requestUrl, setIcon, setTooltip } from 'obsidian';
-import type { App, TFile } from 'obsidian';
+// src/main.ts
+import { Modal, Notice, Platform, Plugin, Setting, TFile, getLanguage, normalizePath, requestUrl, setIcon, setTooltip } from 'obsidian';
+import type { App } from 'obsidian';
 import { Crypt } from './crypt.ts';
 import { CryptDriveFs, DriveClient, GoogleAuth, RootMissingError, parseRefreshToken, pollDeviceLogin, startDeviceLogin } from './drive.ts';
-import type { Request } from './drive.ts';
+import type { CachedRemoteFile, Request } from './drive.ts';
 import { T, setLanguage } from './i18n.ts';
 import { CryptDriveSyncSettingTab, DEFAULTS } from './settings.ts';
 import type { Settings } from './settings.ts';
@@ -10,18 +11,16 @@ import { apply, plan } from './sync.ts';
 import type { Action, Plan } from './sync.ts';
 import type { BaseEntry, LocalEntry, LocalFs, RemoteEntry } from './types.ts';
 import { SetupWizard } from './wizard.ts';
-import { BackupManager } from './backup.ts'; // added backup feature AI CODE
-import { PathSanitizer } from './sanitizer.ts'; // 
+import { BackupManager } from './backup.ts';
+import { PathSanitizer } from './sanitizer.ts';
 
-// Secrets live in Obsidian's SecretStorage: per device, never in the vault.
-// Keys are namespaced per vault (see sid()): SecretStorage is app-wide, and each vault may use its own password/sign-in.
 const TOKEN_ID = 'token';
 export const PASSWORD_ID = 'password';
 export const SALT_ID = 'salt';
 export const CLIENT_SECRET_ID = 'client-secret';
-// Built-in OAuth client (identifies the app, not the user), baked in at build time from google-client.json
-// (see esbuild.config.mjs); empty if built without it. Installed-app client secrets aren't confidential.
+
 declare const GOOGLE_CLIENT: { id: string; secret: string };
+
 const MIN_DELETE_COUNT = 10;
 const req = requestUrl as unknown as Request;
 
@@ -29,6 +28,9 @@ export default class CryptDriveSync extends Plugin {
 	settings: Settings = { ...DEFAULTS };
 	lastResult = '';
 	private base = new Map<string, BaseEntry>();
+	private baseDirs = new Set<string>();
+	private pageToken?: string;
+	private remoteFilesCache = new Map<string, CachedRemoteFile>();
 	private running = false;
 	private lastSyncAt = 0;
 	private logLines: string[] = [];
@@ -36,25 +38,19 @@ export default class CryptDriveSync extends Plugin {
 	private crypt?: { key: string; crypt: Crypt };
 	private editTimer = 0;
 	private editedDuringSync = false;
-	private createRoot = false; // user confirmed creating a missing crypt root (this session)
-	backupManager = new BackupManager(this); //added backup feature AI CODE
+	private createRoot = false;
 
-    /**
-    * Resolves the structured remote path for a given subsystem ('vaults', '_backups', '_deleted').
-    * Example output: 'obsidian-sync/_backups/my-vault'
-    */
-        getRemoteSubsystemPath(subsystem: 'vaults' | '_backups' | '_deleted'): string {
-        const root = PathSanitizer.sanitizeRootPath(this.settings.rootPath);
-        const vaultName = PathSanitizer.sanitizeVaultName(this.settings.folder, this.app.vault.getName());
-        return `${root}/${subsystem}/${vaultName}`;
-    }
+	backupManager = new BackupManager(this);
 
-    /**
-    * Returns the remote path dedicated strictly to active vault note sync.
-    */
-    getRemoteVaultPath(): string {
-    return this.getRemoteSubsystemPath('vaults');
-    }
+	getRemoteSubsystemPath(subsystem: 'vaults' | '_backups' | '_deleted'): string {
+		const root = PathSanitizer.sanitizeRootPath(this.settings.rootPath);
+		const vaultName = PathSanitizer.sanitizeVaultName(this.settings.folder, this.app.vault.getName());
+		return `${root}/${subsystem}/${vaultName}`;
+	}
+
+	getRemoteVaultPath(): string {
+		return this.getRemoteSubsystemPath('vaults');
+	}
 
 	async onload() {
 		setLanguage(getLanguage());
@@ -62,11 +58,11 @@ export default class CryptDriveSync extends Plugin {
 		this.settings = { ...DEFAULTS, ...((await this.loadData()) as Partial<Settings> | null) };
 		if (!this.settings.folder) this.settings.folder = this.app.vault.getName();
 		this.base = await this.loadBase();
-		this.addSettingTab(new CryptDriveSyncSettingTab(this));
 
+		this.addSettingTab(new CryptDriveSyncSettingTab(this));
 		this.addRibbonIcon('refresh-cw', T.ribbon, () => void this.sync());
+
 		if (!Platform.isMobile) {
-			// Status bar (desktop only): lock icon + "Crypt ✓ 10:29"; click = sync now.
 			const el = this.addStatusBarItem();
 			el.addClass('mod-clickable', 'cds-status');
 			const icon = el.createSpan({ cls: 'cds-status-icon' });
@@ -75,6 +71,7 @@ export default class CryptDriveSync extends Plugin {
 			this.setStatus(T.statusIdle, T.statusTip(this.lastResult));
 			this.registerDomEvent(el, 'click', () => void this.sync());
 		}
+
 		this.addCommand({ id: 'sync-now', name: T.cmdSync, callback: () => void this.sync() });
 		this.addCommand({ id: 'show-plan', name: T.cmdPlan, callback: () => void this.sync({ dryRun: true }) });
 		this.addCommand({ id: 'show-log', name: T.cmdLog, callback: () => this.openLog() });
@@ -82,75 +79,82 @@ export default class CryptDriveSync extends Plugin {
 		this.addCommand({ id: 'setup', name: T.cmdWizard, callback: () => this.openWizard() });
 		this.addCommand({ id: 'forget-device', name: T.forgetName, callback: () => void this.forgetDevice() });
 
-		// Triggers: start, interval, after edits, returning to the app (iOS suspends us in background).
 		this.app.workspace.onLayoutReady(() => {
 			if (!this.ready()) {
-				if (!this.settings.wizardDone) this.openWizard(); // first run: guide instead of failing silently
-			} else if (this.settings.syncOnStart) void this.sync({ quiet: true });
-        // AI CODE fix sync triggered on windows focus
-		const onEdit = () => {
-        const sec = Number(this.settings.afterEditSec);
-         if (!sec || sec <= 0) return;
-          if (this.running) {
-           this.editedDuringSync = true;
-        return;
-        }
-        window.clearTimeout(this.editTimer);
-        this.editTimer = window.setTimeout(() => void this.sync({ quiet: true }), sec * 1000);
-        };
-		// END OF AI CODE
-			for (const ev of ['create', 'modify', 'delete', 'rename'] as const) this.registerEvent(this.app.vault.on(ev as 'create', onEdit));
+				if (!this.settings.wizardDone) this.openWizard();
+			} else if (this.settings.syncOnStart) {
+				void this.sync({ quiet: true });
+			}
 		});
-		this.registerInterval(window.setInterval(() => {
-			const min = this.settings.intervalMin;
-			if (min > 0 && Date.now() - this.lastSyncAt >= min * 60_000) void this.sync({ quiet: true });
-		}, 60_000));
-		// AI CODE fix sync on focus part 2
-        this.registerDomEvent(document, 'visibilitychange', () => {
-        const min = Number(this.settings.intervalMin);
-        if (min > 0 && document.visibilityState === 'visible' && Date.now() - this.lastSyncAt >= min * 60_000) {
-        void this.sync({ quiet: true });
-        }
-        });
-		this.addCommand({
-            id: 'create-backup',
-            name: T.cmdBackup,
-            callback: () => void this.backupManager.createBackup(),
-        });
-	    }
 
-        refreshTimers(): void {
+		const onEdit = () => {
+			const sec = Number(this.settings.afterEditSec);
+			if (!sec || sec <= 0) return;
+			if (this.running) {
+				this.editedDuringSync = true;
+				return;
+			}
+			window.clearTimeout(this.editTimer);
+			this.editTimer = window.setTimeout(() => void this.sync({ quiet: true }), sec * 1000);
+		};
+
+		for (const ev of ['create', 'modify', 'delete', 'rename'] as const) {
+			this.registerEvent(this.app.vault.on(ev as 'create', onEdit));
+		}
+
+		this.registerInterval(
+			window.setInterval(() => {
+				const min = Number(this.settings.intervalMin);
+				if (min > 0 && Date.now() - this.lastSyncAt >= min * 60_000) void this.sync({ quiet: true });
+			}, 60_000),
+		);
+
+		this.registerDomEvent(document, 'visibilitychange', () => {
+			const min = Number(this.settings.intervalMin);
+			if (min > 0 && document.visibilityState === 'visible' && Date.now() - this.lastSyncAt >= min * 60_000) {
+				void this.sync({ quiet: true });
+			}
+		});
+
+		this.addCommand({ id: 'create-backup', name: T.cmdBackup, callback: () => void this.backupManager.createBackup() });
+	}
+
+	refreshTimers(): void {
 		window.clearTimeout(this.editTimer);
 		this.editTimer = 0;
-	    }
-		// END OF AI BLOCK
+	}
 
 	onunload() {
 		window.clearTimeout(this.editTimer);
 	}
 
-	// ---------- sync ----------
-
-	async sync(opts: { quiet?: boolean; dryRun?: boolean } = {}): Promise<void> {
-		if (this.running) return;
+async sync(opts: { quiet?: boolean; dryRun?: boolean } = {}): Promise<void> {
+		if (this.running) {
+			if (!opts.quiet) new Notice(`${T.noticePrefix}: Sync is already in progress...`);
+			return;
+		}
 		this.running = true;
 		this.editedDuringSync = false;
 		this.setStatus(T.statusRunning, T.statusTip(this.lastResult), true);
-		const base = this.base; // resetState() swaps the map; a sync still holding the old one must not save it
+		const base = this.base;
 		let again = false;
 		try {
-			const remote = await this.remote(!opts.quiet); // background triggers stay silent until set up
+			const remote = await this.remote(!opts.quiet);
 			if (!remote) return;
 			const local = new VaultFs(this);
 			const [l, r] = await Promise.all([local.list(), remote.list()]);
+
+			this.pageToken = remote.getPageToken();
+			this.remoteFilesCache = remote.getFilesCache();
+
 			const warnings = [...r.warnings, ...this.filter(l, r.files)];
-			const opts1 = { minDeleteCount: MIN_DELETE_COUNT, maxDeletePct: this.settings.maxDeletePct };
+			const opts1 = { minDeleteCount: MIN_DELETE_COUNT, maxDeletePct: Number(this.settings.maxDeletePct) };
 			let p = plan(l, r.files, base, opts1);
 			p.warnings.unshift(...warnings);
-			p.warnings.forEach((w) => this.log(`⚠ ${w}`));
+			p.warnings.forEach((w) => this.log(`\u26a0 ${w}`));
 
-            if (opts.dryRun) {
-				this.finish(T.planTitle, false); // Fixes Bug 3: Clears status bar spinning animation
+			if (opts.dryRun) {
+				this.finish(T.planTitle, false);
 				await new PlanModal(this.app, p, false).ask();
 				return;
 			}
@@ -163,29 +167,29 @@ export default class CryptDriveSync extends Plugin {
 				p = { ...plan(l, r.files, base, { minDeleteCount: Infinity, maxDeletePct: 100 }), warnings: p.warnings };
 			}
 			if (!p.actions.length) {
+				await this.saveBase();
 				this.finish(T.noChanges, !opts.quiet);
 				return;
 			}
+
+			const currentLocalDirs = await local.listDirs();
 
 			const res = await apply(p, local, remote, base, {
 				deviceName: this.settings.deviceName || this.defaultDeviceName(),
 				now: () => new Date(),
 				saveBase: async () => {
 					if (base !== this.base) throw new Error(T.staleSettings);
-					await this.saveBase();
+					this.remoteFilesCache = remote.getFilesCache();
+					await this.saveBase(currentLocalDirs);
 				},
 				onProgress: (done, total) => this.setStatus(`${T.statusRunning} ${done}/${total}`, T.statusTip(this.lastResult), true),
 				log: (m) => this.log(m),
 			});
 
-// Prune local empty directories left behind after file trashes
-			await local.cleanEmptyFolders();
+			await remote.cleanEmptyRemoteFolders();
+			this.remoteFilesCache = remote.getFilesCache();
+			await this.saveBase(currentLocalDirs);
 
-			// Safe invoke for remote empty folder pruning on Drive
-			if (remote) {
-				await remote.cleanEmptyRemoteFolders();
-			}
-			
 			const n = (t: Action['type']) => p.actions.filter((a) => a.type === t).length;
 			const parts = T.summary(n('upload'), n('download'));
 			if (n('trashRemote') + n('trashLocal')) parts.push(T.sumTrashed(n('trashRemote') + n('trashLocal')));
@@ -198,41 +202,29 @@ export default class CryptDriveSync extends Plugin {
 		} finally {
 			this.running = false;
 			if (again) void this.sync(opts);
-		// AI CODE fix focus	
-        const editSec = Number(this.settings.afterEditSec);
-        if (this.editedDuringSync && editSec > 0) {
-        window.clearTimeout(this.editTimer);
-        this.editTimer = window.setTimeout(() => void this.sync({ quiet: true }), editSec * 1000);
-        }
-		// END OF AI CODE
+			const editSec = Number(this.settings.afterEditSec);
+			if (this.editedDuringSync && editSec > 0) {
+				window.clearTimeout(this.editTimer);
+				this.editTimer = window.setTimeout(() => void this.sync({ quiet: true }), editSec * 1000);
+			}
 		}
 	}
 
-	/**
-	 * Excludes, dotfiles and size limit. A path skipped on EITHER side is dropped from BOTH,
-	 * so it becomes `forget` (never a trash): a file that outgrew the limit must not be deleted elsewhere.
-	 */
-        private filter(l: Map<string, LocalEntry>, r: Map<string, RemoteEntry>): string[] {
-		const ex = this.settings.useRawRegex 
-			? parseRawRegex(this.settings.exclude) 
-			: globs(this.settings.exclude);
-
+	private filter(l: Map<string, LocalEntry>, r: Map<string, RemoteEntry>): string[] {
+		const ex = this.settings.useRawRegex ? parseRawRegex(this.settings.exclude) : globs(this.settings.exclude);
 		const localBackupFolder = PathSanitizer.sanitizeLocalBackupFolder(this.settings.localBackupFolder);
-		const max = this.settings.maxFileMb * 1024 * 1024;
+		const max = Number(this.settings.maxFileMb) * 1024 * 1024;
 		const warnings: string[] = [];
 
 		for (const path of new Set([...l.keys(), ...r.keys()])) {
-			// Always protect local backup directory from recursive sync loops
 			const isLocalBackup = path === localBackupFolder || path.startsWith(`${localBackupFolder}/`);
-			
-			// Block dot-folders ONLY if syncDotFolders toggle is disabled
 			const isDotFolder = !this.settings.syncDotFolders && path.split('/').some((seg) => seg.startsWith('.'));
 			const big = (l.get(path)?.size ?? 0) > max || (r.get(path)?.size ?? 0) > max;
 
-			if (isLocalBackup || isDotFolder || ex.some((g) => g.test(path)) || big) {
+			if (isLocalBackup || isDotFolder || ex.some((g: RegExp) => g.test(path)) || big) {
 				l.delete(path);
 				r.delete(path);
-				if (big) warnings.push(T.tooBig(this.settings.maxFileMb, path));
+				if (big) warnings.push(T.tooBig(Number(this.settings.maxFileMb), path));
 			}
 		}
 		return warnings;
@@ -243,7 +235,10 @@ export default class CryptDriveSync extends Plugin {
 		this.lastResult = `${new Date().toLocaleString()}: ${msg}`;
 		this.log(msg);
 		if (failed) console.error(`crypt-drive-sync: ${msg}`);
-		this.setStatus(failed ? T.statusError : T.statusOk(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })), T.statusTip(this.lastResult));
+		this.setStatus(
+			failed ? T.statusError : T.statusOk(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
+			T.statusTip(this.lastResult),
+		);
 		if (notify) new Notice(`${T.noticePrefix}: ${msg}`);
 	}
 
@@ -259,9 +254,6 @@ export default class CryptDriveSync extends Plugin {
 		if (this.logLines.length > 500) this.logLines.shift();
 	}
 
-	// ---------- remote, secrets, state ----------
-
-	/** SecretStorage id for this vault on this device (lowercase, digits, dashes). */
 	private sid(key: string): string {
 		return `crypt-drive-sync-${this.deviceId()}-${key}`;
 	}
@@ -269,7 +261,6 @@ export default class CryptDriveSync extends Plugin {
 	secret(key: string): string {
 		const v = this.app.secretStorage.getSecret(this.sid(key));
 		if (v !== null) return v;
-		// ponytail: pre-release builds used global ids; copy once. Drop after 1.0.
 		const old = this.app.secretStorage.getSecret(`crypt-drive-sync-${key}`) ?? '';
 		if (old) this.storeSecret(key, old);
 		return old;
@@ -279,18 +270,19 @@ export default class CryptDriveSync extends Plugin {
 		this.app.secretStorage.setSecret(this.sid(key), value);
 	}
 
-	/** Password/salt changed → different remote keys → forget sync state. */
 	async setSecret(key: string, value: string): Promise<void> {
 		this.storeSecret(key, value);
 		if (key === PASSWORD_ID || key === SALT_ID) await this.resetState();
 	}
-    // removed private to access it AI CODE EDIT
+
 	async getCrypt(): Promise<Crypt | undefined> {
 		const password = this.secret(PASSWORD_ID);
 		if (!password) return undefined;
 		const salt = this.secret(SALT_ID);
 		const key = JSON.stringify([password, salt, this.settings.dirNameEncrypt]);
-		if (this.crypt?.key !== key) this.crypt = { key, crypt: await Crypt.create({ password, salt, dirNameEncrypt: this.settings.dirNameEncrypt }) };
+		if (this.crypt?.key !== key) {
+			this.crypt = { key, crypt: await Crypt.create({ password, salt, dirNameEncrypt: this.settings.dirNameEncrypt }) };
+		}
 		return this.crypt.crypt;
 	}
 
@@ -307,7 +299,6 @@ export default class CryptDriveSync extends Plugin {
 		return !!c.id && !!c.secret;
 	}
 
-	/** Own OAuth client. A new client ID invalidates the sign-in (tokens belong to a client). Empty secret = keep. */
 	async setClient(id: string, secret: string): Promise<void> {
 		if (id !== this.settings.clientId) {
 			this.settings.clientId = id;
@@ -316,35 +307,40 @@ export default class CryptDriveSync extends Plugin {
 		}
 		if (secret) this.storeSecret(CLIENT_SECRET_ID, secret);
 	}
-    // rewritten
-        async remote(report = true, subsystem: 'vaults' | '_backups' | '_deleted' = 'vaults'): Promise<CryptDriveFs | undefined> {
-        const s = this.settings;
-        const missing = !this.hasClient() ? T.needClient : !this.isLoggedIn() ? T.needLogin : !this.secret(PASSWORD_ID) ? T.needPassword : '';
-        if (missing) {
-            if (report) this.finish(T.notConfigured(missing), true);
-            return undefined;
-        }
-        const c = this.client();
-        const auth = new GoogleAuth(req, c.id, c.secret, this.secret(TOKEN_ID));
-        const crypt = (await this.getCrypt())!;
-        
-        // Scope folder to the requested subsystem (e.g., 'vaults/film_db' or '_backups/film_db')
-        const vaultName = PathSanitizer.sanitizeVaultName(s.folder, this.app.vault.getName());
-        const remoteSubFolder = `${subsystem}/${vaultName}`;
 
-        return new CryptDriveFs(
-            new DriveClient(req, auth),
-            crypt,
-            {
-                rootPath: s.rootPath,
-                folder: remoteSubFolder,
-                trashDir: s.trashDir,
-                createRoot: this.createRoot,
-                dirNameEncrypt: s.dirNameEncrypt
-            },
-            (n) => Crypt.decryptedSize(n)
-        );	
-    }
+	async remote(report = true, subsystem: 'vaults' | '_backups' | '_deleted' = 'vaults'): Promise<CryptDriveFs | undefined> {
+		const s = this.settings;
+		const missing = !this.hasClient()
+			? T.needClient
+			: !this.isLoggedIn()
+				? T.needLogin
+				: !this.secret(PASSWORD_ID)
+					? T.needPassword
+					: '';
+		if (missing) {
+			if (report) this.finish(T.notConfigured(missing), true);
+			return undefined;
+		}
+		const c = this.client();
+		const auth = new GoogleAuth(req, c.id, c.secret, this.secret(TOKEN_ID));
+		const crypt = (await this.getCrypt())!;
+		const vaultName = PathSanitizer.sanitizeVaultName(s.folder, this.app.vault.getName());
+		const remoteSubFolder = `${subsystem}/${vaultName}`;
+		return new CryptDriveFs(
+			new DriveClient(req, auth),
+			crypt,
+			{
+				rootPath: s.rootPath,
+				folder: remoteSubFolder,
+				trashDir: s.trashDir,
+				createRoot: this.createRoot,
+				dirNameEncrypt: s.dirNameEncrypt,
+			},
+			(encSize: number) => Crypt.decryptedSize(encSize),
+			this.pageToken,
+			this.remoteFilesCache,
+		);
+	}
 
 	private client(): { id: string; secret: string } {
 		const id = this.settings.clientId.trim();
@@ -372,24 +368,22 @@ export default class CryptDriveSync extends Plugin {
 		}
 	}
 
-	/** First use without rclone: the crypt root doesn't exist yet. Creating it when rclone made one we can't see would fork the data. */
 	private async askCreateRoot(): Promise<boolean> {
 		const ok = await new ConfirmModal(this.app, T.rootTitle, T.rootText(this.settings.rootPath), T.create).ask();
 		if (ok) this.createRoot = true;
 		return ok;
 	}
 
-	/** Read-only check of sign-in + password against the cloud, in plain words. */
 	async probe(): Promise<{ ok: boolean; text: string }> {
 		try {
 			const remote = await this.remote(false);
 			if (!remote) return { ok: false, text: T.probeNeedSetup };
 			const { files, warnings } = await remote.list();
-			warnings.forEach((w) => this.log(`⚠ ${w}`));
+			warnings.forEach((w) => this.log(`\u26a0 ${w}`));
 			return { ok: true, text: files.size ? T.probeOkFiles(files.size) : T.probeOkEmpty };
 		} catch (e) {
 			if (e instanceof RootMissingError) return { ok: true, text: T.probeNoRoot(this.settings.rootPath) };
-			return { ok: false, text: `✗ ${humanError(e)}` };
+			return { ok: false, text: `\u2717 ${humanError(e)}` };
 		}
 	}
 
@@ -401,12 +395,11 @@ export default class CryptDriveSync extends Plugin {
 		new SetupWizard(this, onDone).open();
 	}
 
-	/** Back to a fresh install on this device: secrets, settings and sync state. Notes and the cloud are untouched. */
 	async forgetDevice(onDone: () => void = () => {}): Promise<void> {
 		if (!(await new ConfirmModal(this.app, T.forgetName, T.forgetConfirm, T.forgetButton).ask())) return;
 		for (const key of [TOKEN_ID, PASSWORD_ID, SALT_ID, CLIENT_SECRET_ID]) {
 			this.storeSecret(key, '');
-			this.app.secretStorage.setSecret(`crypt-drive-sync-${key}`, ''); // pre-release global id
+			this.app.secretStorage.setSecret(`crypt-drive-sync-${key}`, '');
 		}
 		this.settings = { ...DEFAULTS, folder: this.app.vault.getName() };
 		await this.saveData(this.settings);
@@ -424,7 +417,6 @@ export default class CryptDriveSync extends Plugin {
 		await this.saveData(this.settings);
 	}
 
-	/** Where the vault lives in Drive. A different place = a different remote → forget sync state. */
 	async setLocation(rootPath: string, folder: string): Promise<void> {
 		if (rootPath === this.settings.rootPath && folder === this.settings.folder) return;
 		Object.assign(this.settings, { rootPath, folder });
@@ -438,6 +430,8 @@ export default class CryptDriveSync extends Plugin {
 
 	async resetState(notify = false): Promise<void> {
 		this.base = new Map();
+		this.pageToken = undefined;
+		this.remoteFilesCache = new Map();
 		await this.saveBase();
 		if (notify) new Notice(T.stateReset);
 	}
@@ -448,13 +442,10 @@ export default class CryptDriveSync extends Plugin {
 		return Platform.isMacOS ? 'Mac' : Platform.isWin ? 'Windows' : 'Linux';
 	}
 
-	// Sync state lives next to data.json, per device. ponytail: whole map rewritten after each action; fine for thousands of files.
 	private get statePath() {
 		return normalizePath(`${this.manifest.dir}/state.json`);
 	}
 
-	// state.json is bound to this device via localStorage: a plugin folder copied from another device
-	// (e.g. installing via Finder) must not bring that device's base, or files missing here would be trashed everywhere.
 	private deviceId(): string {
 		let id = this.app.loadLocalStorage('crypt-drive-sync-device') as string | null;
 		if (!id) {
@@ -466,28 +457,48 @@ export default class CryptDriveSync extends Plugin {
 
 	private async loadBase(): Promise<Map<string, BaseEntry>> {
 		try {
-			const st = JSON.parse(await this.app.vault.adapter.read(this.statePath)) as { device?: string; base?: Record<string, BaseEntry> };
-			if (st.device === this.deviceId() && st.base) return new Map(Object.entries(st.base));
+			const raw = await this.app.vault.adapter.read(this.statePath);
+			const st = JSON.parse(raw) as {
+				device?: string;
+				base?: Record<string, BaseEntry>;
+				dirs?: string[];
+				pageToken?: string;
+				remoteFiles?: Record<string, CachedRemoteFile>;
+			};
+			if (st.device === this.deviceId()) {
+				if (st.dirs) this.baseDirs = new Set(st.dirs);
+				if (st.pageToken) this.pageToken = st.pageToken;
+				if (st.remoteFiles) this.remoteFilesCache = new Map(Object.entries(st.remoteFiles));
+				if (st.base) return new Map(Object.entries(st.base));
+			}
 		} catch {
-			// no state yet
+			// state file missing or unreadable
 		}
+		this.baseDirs = new Set();
+		this.pageToken = undefined;
+		this.remoteFilesCache = new Map();
 		return new Map();
 	}
 
-	private async saveBase(): Promise<void> {
-		await this.app.vault.adapter.write(this.statePath, JSON.stringify({ device: this.deviceId(), base: Object.fromEntries(this.base) }));
+	async saveBase(currentDirs?: Set<string>): Promise<void> {
+		if (currentDirs) this.baseDirs = currentDirs;
+		await this.app.vault.adapter.write(
+			this.statePath,
+			JSON.stringify(
+				{
+					device: this.deviceId(),
+					base: Object.fromEntries(this.base),
+					dirs: Array.from(this.baseDirs),
+					pageToken: this.pageToken ?? null,
+					remoteFiles: Object.fromEntries(this.remoteFilesCache),
+				},
+				null,
+				2,
+			),
+		);
 	}
 }
 
-/**
- * LocalFs over the Vault API. Keys are NFC; macOS may hand us NFD paths, so keep the real path per key (files and folders).
- * mtime/size always come from adapter.stat — the same source in list(), stat() and after write(), so base converges
- * even if the vault cache lags or the OS ignores the requested mtime.
- */
-
-/**
- * LocalFs over the Vault API & File Adapter.
- */
 class VaultFs implements LocalFs {
 	private plugin: CryptDriveSync;
 	private app: App;
@@ -502,12 +513,29 @@ class VaultFs implements LocalFs {
 		return this.real.get(p) ?? p;
 	}
 
-	    async list(): Promise<Map<string, LocalEntry>> {
+	async listDirs(): Promise<Set<string>> {
+		const dirs = new Set<string>();
+		const localBackupFolder = PathSanitizer.sanitizeLocalBackupFolder(this.plugin.settings.localBackupFolder);
+		const scan = async (dir: string) => {
+			const list = await this.app.vault.adapter.list(dir);
+			for (const folder of list.folders) {
+				const nfc = folder.normalize('NFC');
+				const isLocalBackup = nfc === localBackupFolder || nfc.startsWith(`${localBackupFolder}/`);
+				const isDotFolder = !this.plugin.settings.syncDotFolders && nfc.split('/').some((seg) => seg.startsWith('.'));
+				if (!isLocalBackup && !isDotFolder) {
+					dirs.add(nfc);
+					await scan(folder);
+				}
+			}
+		};
+		await scan('');
+		return dirs;
+	}
+
+	async list(): Promise<Map<string, LocalEntry>> {
 		const out = new Map<string, LocalEntry>();
 		this.real.clear();
-
 		if (this.plugin.settings.syncDotFolders) {
-			// Direct disk scan via adapter to discover dot-folders (.obsidian, etc.)
 			await this.scanAdapter('', out);
 		} else {
 			for (const f of this.app.vault.getAllLoadedFiles()) if (f.path !== '/') this.real.set(f.path.normalize('NFC'), f.path);
@@ -532,61 +560,48 @@ class VaultFs implements LocalFs {
 		}
 	}
 
-	/**
-	 * Recursively removes empty directories on disk after file deletions.
-	 */
-	async cleanEmptyFolders(dir = ''): Promise<boolean> {
-		const list = await this.app.vault.adapter.list(dir);
-		let isEmpty = true;
-
-		for (const folder of list.folders) {
-			const subIsEmpty = await this.cleanEmptyFolders(folder);
-			if (subIsEmpty) {
-				await this.app.vault.adapter.rmdir(folder, false).catch(() => {});
-			} else {
-				isEmpty = false;
-			}
-		}
-
-		if (list.files.length > 0) {
-			isEmpty = false;
-		}
-
-		return isEmpty && dir !== '';
-	}
-
 	async stat(path: string): Promise<LocalEntry | undefined> {
 		const st = await this.app.vault.adapter.stat(this.path(path));
 		return st?.type === 'file' ? { mtime: st.mtime, size: st.size } : undefined;
 	}
 
 	private file(path: string): TFile | null {
-		return this.app.vault.getFileByPath(this.path(path));
+		const f = this.app.vault.getAbstractFileByPath(this.path(path));
+		return f instanceof TFile ? f : null;
 	}
 
 	async read(path: string): Promise<Uint8Array> {
+		const realPath = this.path(path);
 		const f = this.file(path);
-		if (!f) throw new Error(`not on this device: ${path}`);
-		return new Uint8Array(await this.app.vault.readBinary(f));
+		if (f) {
+			return new Uint8Array(await this.app.vault.readBinary(f));
+		}
+		if (await this.app.vault.adapter.exists(realPath)) {
+			return new Uint8Array(await this.app.vault.adapter.readBinary(realPath));
+		}
+		throw new Error(`not on this device: ${path}`);
 	}
 
 	async write(path: string, data: Uint8Array, mtime: number): Promise<LocalEntry> {
 		const buf = data.slice().buffer;
 		const f = this.file(path);
-		if (f) await this.app.vault.modifyBinary(f, buf, { mtime });
-		else {
-			const segs = path.split('/');
+		if (f) {
+			await this.app.vault.modifyBinary(f, buf, { mtime });
+		} else {
+			const realPath = this.path(path);
+			const segs = realPath.split('/');
 			let dir = '';
 			for (let i = 1; i < segs.length; i++) {
 				const key = segs.slice(0, i).join('/');
 				const real = this.real.get(key) ?? (dir ? `${dir}/${segs[i - 1]!}` : segs[i - 1]!);
-				if (!this.app.vault.getFolderByPath(real)) await this.app.vault.createFolder(real);
+				if (!(await this.app.vault.adapter.exists(real))) {
+					await this.app.vault.adapter.mkdir(real);
+				}
 				this.real.set(key, real);
 				dir = real;
 			}
-			const real = dir ? `${dir}/${segs[segs.length - 1]!}` : path;
-			await this.app.vault.createBinary(real, buf, { mtime });
-			this.real.set(path, real);
+			await this.app.vault.adapter.writeBinary(realPath, buf, { mtime });
+			this.real.set(path, realPath);
 		}
 		const st = await this.stat(path);
 		if (!st) throw new Error(`write failed: ${path}`);
@@ -599,7 +614,6 @@ class VaultFs implements LocalFs {
 	}
 }
 
-/** Engine/Google errors → what the user should do, in their language. Unknown errors pass through. */
 export function humanError(e: unknown): string {
 	const m = e instanceof Error ? e.message : String(e);
 	const rules: [RegExp, string][] = [
@@ -613,15 +627,23 @@ export function humanError(e: unknown): string {
 	return rules.find(([re]) => re.test(m))?.[1] ?? m;
 }
 
-/** `*` = anything but `/`, `**` = anything, `?` = one char. A pattern matches the path or any folder prefix. */
 export function globs(text: string): RegExp[] {
-	return text.split('\n').map((s) => s.trim()).filter(Boolean).map((g) => {
-		const re = g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*/g, '\0').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]').replace(/\0/g, '.*');
-		return new RegExp(`^${re}(/|$)`);
-	});
+	return text
+		.split('\n')
+		.map((s) => s.trim())
+		.filter(Boolean)
+		.map((g) => {
+			const re = g
+				.split('')
+				.map((c) => (/[.+^${}()|[\]\\]/.test(c) ? `\\${c}` : c))
+				.join('')
+				.replace(/\*\*/g, '.*')
+				.replace(/\*/g, '[^/]*')
+				.replace(/\?/g, '[^/]');
+			return new RegExp(`^${re}(/|$)`);
+		});
 }
 
-/** Parses multi-line user input into an array of compiled JavaScript RegExp objects. */
 export function parseRawRegex(text: string): RegExp[] {
 	return text
 		.split('\n')
@@ -655,12 +677,23 @@ class ConfirmModal extends Modal {
 		this.setTitle(title);
 		this.contentEl.createEl('p', { text });
 		new Setting(this.contentEl)
-			.addButton((b) => b.setButtonText(button).setCta().onClick(() => { this.ok = true; this.close(); }))
+			.addButton((b) =>
+				b
+					.setButtonText(button)
+					.setCta()
+					.onClick(() => {
+						this.ok = true;
+						this.close();
+					}),
+			)
 			.addButton((b) => b.setButtonText(T.cancel).onClick(() => this.close()));
 	}
 
 	ask(): Promise<boolean> {
-		return new Promise((resolve) => { this.resolve = resolve; this.open(); });
+		return new Promise((resolve) => {
+			this.resolve = resolve;
+			this.open();
+		});
 	}
 
 	onClose() {
@@ -668,8 +701,6 @@ class ConfirmModal extends Modal {
 	}
 }
 
-
-/** Shows the plan; resolves true if the user applies it. */
 class PlanModal extends Modal {
 	private result = false;
 	private resolve?: (ok: boolean) => void;
@@ -679,22 +710,38 @@ class PlanModal extends Modal {
 		this.setTitle(T.planTitle);
 		const el = this.contentEl;
 		if (p.blocked) el.createEl('p', { text: T.stopped(p.blocked), cls: 'mod-warning' });
-		for (const w of p.warnings) el.createEl('p', { text: `⚠ ${w}` });
+		for (const w of p.warnings) el.createEl('p', { text: `\u26a0 ${w}` });
 		if (!p.actions.length) el.createEl('p', { text: T.planNothing });
 		for (const type of Object.keys(T.actions) as Action['type'][]) {
 			const paths = p.actions.filter((a) => a.type === type).map((a) => a.path);
 			if (!paths.length) continue;
 			const d = el.createEl('details');
 			d.createEl('summary', { text: `${T.actions[type]}: ${paths.length}` });
-			d.createEl('pre', { text: paths.slice(0, 500).join('\n') + (paths.length > 500 ? `\n${T.more(paths.length - 500)}` : ''), cls: 'cds-pre' });
+			d.createEl('pre', {
+				text: paths.slice(0, 500).join('\n') + (paths.length > 500 ? `\n${T.more(paths.length - 500)}` : ''),
+				cls: 'cds-pre',
+			});
 		}
 		const s = new Setting(el);
-		if (canApply && p.actions.length) s.addButton((b) => b.setButtonText(T.planApply).setDestructive().setCta().onClick(() => { this.result = true; this.close(); }));
+		if (canApply && p.actions.length)
+			s.addButton((b) =>
+				b
+					.setButtonText(T.planApply)
+					.setDestructive()
+					.setCta()
+					.onClick(() => {
+						this.result = true;
+						this.close();
+					}),
+			);
 		s.addButton((b) => b.setButtonText(canApply ? T.cancel : T.close).onClick(() => this.close()));
 	}
 
 	ask(): Promise<boolean> {
-		return new Promise((resolve) => { this.resolve = resolve; this.open(); });
+		return new Promise((resolve) => {
+			this.resolve = resolve;
+			this.open();
+		});
 	}
 
 	onClose() {
@@ -702,7 +749,6 @@ class PlanModal extends Modal {
 	}
 }
 
-/** Google device flow: show code + link, poll until approved. Fallback: paste a refresh token (e.g. from rclone). */
 class LoginModal extends Modal {
 	private abort = new AbortController();
 	private token = '';
@@ -718,7 +764,10 @@ class LoginModal extends Modal {
 	}
 
 	ask(): Promise<string> {
-		return new Promise((resolve) => { this.resolve = resolve; this.open(); });
+		return new Promise((resolve) => {
+			this.resolve = resolve;
+			this.open();
+		});
 	}
 
 	async onOpen() {
@@ -727,22 +776,35 @@ class LoginModal extends Modal {
 		const code = el.createDiv({ cls: 'cds-code' });
 		const buttons = new Setting(el);
 		let pasted = '';
-		new Setting(el).setName(T.loginPaste).setDesc(T.loginPasteDesc)
-			.addText((t) => t.onChange((v) => { pasted = v; }))
-			.addButton((b) => b.setButtonText(T.save).onClick(() => {
-				this.token = parseRefreshToken(pasted);
-				if (this.token) this.close();
-			}));
+		new Setting(el)
+			.setName(T.loginPaste)
+			.setDesc(T.loginPasteDesc)
+			.addText((t) =>
+				t.onChange((v) => {
+					pasted = v;
+				}),
+			)
+			.addButton((b) =>
+				b.setButtonText(T.save).onClick(() => {
+					this.token = parseRefreshToken(pasted);
+					if (this.token) this.close();
+				}),
+			);
+
 		try {
 			const login = await startDeviceLogin(req, this.clientId);
 			status.setText(T.loginYourCode);
 			code.setText(login.userCode);
-			// One tap: copy + open in the same user gesture (iOS blocks clipboard/window.open outside a tap).
-			buttons.addButton((b) => b.setButtonText(T.loginButton).setCta().onClick(() => {
-				navigator.clipboard.writeText(login.userCode).catch(() => status.setText(T.loginCopyFailed));
-				window.open(login.verificationUrl);
-				status.setText(T.loginCopied);
-			}));
+			buttons.addButton((b) =>
+				b
+					.setButtonText(T.loginButton)
+					.setCta()
+					.onClick(() => {
+						navigator.clipboard.writeText(login.userCode).catch(() => status.setText(T.loginCopyFailed));
+						window.open(login.verificationUrl);
+						status.setText(T.loginCopied);
+					}),
+			);
 			this.token = await pollDeviceLogin(req, this.clientId, this.clientSecret, login, this.abort.signal);
 			this.close();
 		} catch (e) {
