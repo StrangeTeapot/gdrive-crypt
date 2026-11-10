@@ -4,11 +4,18 @@ FORK OF [crypt-drive-sync by mooncodee](https://github.com/mooncodee/crypt-drive
 
 # Google Drive+
 
-End-to-end encrypted Obsidian vault synchronization for Google Drive across Desktop (Windows, macOS, Linux) and Mobile (iOS, Android).
+End-to-end encrypted Obsidian vault synchronization for Google Drive across Desktop (Windows, macOS, Linux) and Mobile (iOS, Android). Due to cross-platform nature of this fork, the sync flow is aimed at case insensitive systems, therefore does not provide an ability to save files in format: Test.md and test.md in the same folder. Source code of this fork could be modified to provide such functionality.
 
-CryptDriveSync performs pre-upload encryption on your device using the **Rclone crypt** standard (`XSalsa20-Poly1305` for file content and `AES-EME` for file/folder names with key derivation via `scrypt`). Google Drive stores only scrambled data—no note names, folder structures, or text are ever readable by third parties.
+Google Drive+ plugin performs pre-upload encryption on your device using the **Rclone crypt** standard (`XSalsa20-Poly1305` for file content and `AES-EME` for file/folder names with key derivation via `scrypt`). Google Drive stores only scrambled data—no note names, folder structures, or text are ever readable by third parties.
 
-Because the encryption format strictly adheres to Rclone standards, your vault can be accessed, verified, or restored on any system using standard `rclone` commands without plugin lock-in.
+Because the encryption format strictly adheres to Rclone standards, your vault can be accessed, verified, or restored on any system using standard `rclone` commands without plugin lock-in. 
+
+*Visual interface is also available via `rclone gui` command.*
+
+### If you want to directly access your encrypted vault please refer to [rclone docs](https://rclone.org/docs/) or any other guide
+
+> [!NOTE]
+> I am not a developer of any level and do not pretend to be one. This plugin was built by AI (Gemini 3.6) on top of the [original](https://github.com/mooncodee/crypt-drive-sync) repo, i just modified it to the level that i needed for personal use. Always make a backup and proceed at your own risk!
 
 ---
 
