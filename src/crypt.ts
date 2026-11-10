@@ -17,6 +17,11 @@ const DATA = 65536;
 const TAG = 16;
 const B32 = "0123456789abcdefghijklmnopqrstuv";
 
+function toArrayBuffer(u: Uint8Array): Uint8Array {
+	const buf = u.buffer instanceof ArrayBuffer ? u.buffer : new ArrayBuffer(u.byteLength);
+	return new Uint8Array(buf, u.byteOffset, u.byteLength);
+}
+
 export class Crypt {
 	private dataKey: Uint8Array;
 	private nameKey: Uint8Array;
@@ -33,7 +38,7 @@ export class Crypt {
 	static async create(opts: CryptOptions): Promise<Crypt> {
 		const salt = opts.salt === "" ? DEFAULT_SALT : new TextEncoder().encode(opts.salt);
 		const key = opts.password === "" ? new Uint8Array(80) : await scryptAsync(opts.password, salt, { N: 16384, r: 8, p: 1, dkLen: 80 });
-		return new Crypt(key, opts.dirNameEncrypt);
+		return new Crypt(toArrayBuffer(key), opts.dirNameEncrypt);
 	}
 
 	encryptName(segment: string): string {
@@ -77,7 +82,7 @@ export class Crypt {
 			out.set(xsalsa20poly1305(this.dataKey, nonce).encrypt(plain.subarray(i, i + DATA)), o);
 			increment(nonce);
 		}
-		return out;
+		return toArrayBuffer(out);
 	}
 
 	decryptData(enc: Uint8Array): Uint8Array {
@@ -92,7 +97,7 @@ export class Crypt {
 			}
 			increment(nonce);
 		}
-		return out;
+		return toArrayBuffer(out);
 	}
 
 	static decryptedSize(encSize: number): number {
@@ -127,7 +132,7 @@ function b32decode(s: string): Uint8Array {
 		v = ((v << 5) | d) & 0xffff;
 		if ((bits += 5) >= 8) out.push((v >>> (bits -= 8)) & 255);
 	}
-	return Uint8Array.from(out);
+	return toArrayBuffer(Uint8Array.from(out));
 }
 
 // GF(2^128) doubling, as in github.com/rfjakob/eme
@@ -135,7 +140,7 @@ function x2(b: Uint8Array): Uint8Array {
 	const o = new Uint8Array(16);
 	o[0] = (b[0]! << 1) ^ (b[15]! >= 128 ? 135 : 0);
 	for (let j = 1; j < 16; j++) o[j] = (b[j]! << 1) | (b[j - 1]! >> 7);
-	return o;
+	return toArrayBuffer(o);
 }
 
 // EME (Halevi–Rogaway) wide-block AES, port of rfjakob/eme Transform
@@ -143,20 +148,29 @@ function eme(key: Uint8Array, tweak: Uint8Array, P: Uint8Array, encrypt: boolean
 	const m = P.length / 16;
 	if (m < 1 || m > 128) throw new Error("name too long");
 	const aes = () => ecb(key, { disablePadding: true }); // noble ciphers are single-use
-	const t = (b: Uint8Array) => (encrypt ? aes().encrypt(b) : aes().decrypt(b));
+	const t = (b: Uint8Array): Uint8Array =>
+		toArrayBuffer(encrypt ? aes().encrypt(b) : aes().decrypt(b));
 	const L: Uint8Array[] = [];
-	let li = aes().encrypt(new Uint8Array(16));
+	let li = toArrayBuffer(aes().encrypt(new Uint8Array(16)));
 	for (let j = 0; j < m; j++) L.push((li = x2(li)));
-	const xorL = (b: Uint8Array) => b.map((v, i) => v ^ L[i >> 4]![i & 15]!);
+	const xorL = (b: Uint8Array): Uint8Array => {
+		const out = new Uint8Array(b.length);
+		for (let i = 0; i < b.length; i++) {
+			out[i] = b[i]! ^ L[i >> 4]![i & 15]!;
+		}
+		return toArrayBuffer(out);
+	};
 
 	const C = t(xorL(P));
 	const MP = tweak.slice();
 	C.forEach((v, i) => (MP[i & 15] = MP[i & 15]! ^ v));
 	const MC = t(MP);
-	let M = MP.map((v, i) => v ^ MC[i]!);
-	const CCC1 = MC.map((v, i) => v ^ tweak[i]!);
+	let M = new Uint8Array(16);
+	for (let i = 0; i < 16; i++) M[i] = MP[i]! ^ MC[i]!;
+	const CCC1 = new Uint8Array(16);
+	for (let i = 0; i < 16; i++) CCC1[i] = MC[i]! ^ tweak[i]!;
 	for (let j = 1; j < m; j++) {
-		M = x2(M);
+		M.set(x2(M));
 		for (let i = 0; i < 16; i++) {
 			C[j * 16 + i] = C[j * 16 + i]! ^ M[i]!;
 			CCC1[i] = CCC1[i]! ^ C[j * 16 + i]!;

@@ -4,7 +4,7 @@ export class PathSanitizer {
      */
     static sanitizeRootPath(raw?: string): string {
         if (!raw) return 'obsidian-sync';
-        const cleaned = raw.trim().replace(/^[\/\\]+|[\/\\]+$/g, '').replace(/[\/\\]+/g, '/');
+        const cleaned = raw.trim().replace(/^[/\\]+|[/\\]+$/g, '').replace(/[/\\]+/g, '/');
         return cleaned || 'obsidian-sync';
     }
 
@@ -13,7 +13,7 @@ export class PathSanitizer {
      */
     static sanitizeVaultName(raw?: string, defaultName: string = 'default-vault'): string {
         const input = (raw && raw.trim()) ? raw : defaultName;
-        const cleaned = input.trim().replace(/^[\/\\]+|[\/\\]+$/g, '').replace(/[\/\\]+/g, '-');
+        const cleaned = input.trim().replace(/^[/\\]+|[/\\]+$/g, '').replace(/[/\\]+/g, '-');
         return cleaned || 'default-vault';
     }
 
@@ -22,8 +22,8 @@ export class PathSanitizer {
      */
     static sanitizeLocalBackupFolder(raw?: string): string {
         if (!raw) return '.backups';
-        let cleaned = raw.trim().replace(/^[\/\\]+|[\/\\]+$/g, '');
-        cleaned = cleaned.replace(/^[\._]+/, '');
+        let cleaned = raw.trim().replace(/^[/\\]+|[/\\]+$/g, '');
+        cleaned = cleaned.replace(/^[._]+/, '');
         return cleaned ? `.${cleaned}` : '.backups';
     }
 }

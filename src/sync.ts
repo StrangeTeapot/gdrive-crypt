@@ -15,17 +15,6 @@ export interface Plan { actions: Action[]; blocked?: string; warnings: string[] 
 
 const changed = (l: LocalEntry, b: BaseEntry) => l.mtime !== b.mtime || l.size !== b.size;
 
-function decide(l?: LocalEntry, r?: RemoteEntry, b?: BaseEntry): Action['type'] | undefined {
-	// No base (first sync or new on both): never trash, both present → conflict (apply compares bytes).
-	if (!b) return l && r ? 'conflict' : l ? 'upload' : r ? 'download' : undefined;
-	const lc = l && changed(l, b);
-	const rc = r && r.md5 !== b.md5;
-	if (l && r) return lc && rc ? 'conflict' : lc ? 'upload' : rc ? 'download' : undefined;
-	if (l) return lc ? 'upload' : 'trashLocal'; // remote deleted: changed local wins (restore)
-	if (r) return rc ? 'download' : 'trashRemote'; // local deleted: changed remote wins (restore)
-	return 'forget';
-}
-
 export function plan(
 	local: Map<string, LocalEntry>,
 	remote: Map<string, RemoteEntry>,
@@ -33,25 +22,116 @@ export function plan(
 	opts: PlanOptions,
 ): Plan {
 	const warnings: string[] = [];
-
-	// A.md vs a.md: one file on macOS/iOS, two on Drive → leave them alone.
-	const byLower = new Map<string, Set<string>>();
-	for (const p of [...local.keys(), ...remote.keys()]) {
-		const k = p.toLowerCase();
-		byLower.set(k, (byLower.get(k) ?? new Set<string>()).add(p));
-	}
-	const skip = new Set<string>();
-	for (const group of byLower.values()) {
-		if (group.size < 2) continue;
-		for (const p of group) skip.add(p);
-		warnings.push(T.caseCollision([...group].join(', ')));
-	}
-
 	const actions: Action[] = [];
-	for (const path of new Set([...local.keys(), ...remote.keys(), ...base.keys()])) {
-		if (skip.has(path)) continue;
-		const type = decide(local.get(path), remote.get(path), base.get(path));
-		if (type) actions.push({ type, path });
+	const skip = new Set<string>();
+
+	const canonical = (p: string) => p.normalize('NFC').toLowerCase();
+
+	// 1. Group entries by canonical path for each side
+	const groupByCanon = <T>(map: Map<string, T>) => {
+		const byCanon = new Map<string, { path: string; entry: T }[]>();
+		for (const [path, entry] of map.entries()) {
+			const k = canonical(path);
+			const list = byCanon.get(k) ?? [];
+			list.push({ path, entry });
+			byCanon.set(k, list);
+		}
+		return byCanon;
+	};
+
+	const localCanon = groupByCanon(local);
+	const remoteCanon = groupByCanon(remote);
+
+	// 2. Intra-side collision detection (multiple distinct files on the SAME side with same canonical name)
+	for (const [, list] of localCanon.entries()) {
+		if (list.length > 1) {
+			const paths = list.map((item) => item.path);
+			paths.forEach((p) => skip.add(p));
+			warnings.push(T.caseCollisionLocal(paths.join(', ')));
+		}
+	}
+	for (const [, list] of remoteCanon.entries()) {
+		if (list.length > 1) {
+			const paths = list.map((item) => item.path);
+			paths.forEach((p) => skip.add(p));
+			warnings.push(T.caseCollisionRemote(paths.join(', ')));
+		}
+	}
+
+	// 3. Process canonical keys across local, remote, and base
+	const allCanonKeys = new Set<string>([
+		...localCanon.keys(),
+		...remoteCanon.keys(),
+		...Array.from(base.keys()).map(canonical),
+	]);
+
+	for (const k of allCanonKeys) {
+		const lItem = localCanon.get(k)?.[0];
+		const rItem = remoteCanon.get(k)?.[0];
+
+		// Find all matching base entries for this canonical key
+		const matchingBasePaths: string[] = [];
+		for (const bp of base.keys()) {
+			if (canonical(bp) === k) matchingBasePaths.push(bp);
+		}
+
+		const lPath = lItem?.path;
+		const rPath = rItem?.path;
+
+		// Clean up any stale duplicate base paths from previous case renames
+		for (const bp of matchingBasePaths) {
+			if (bp !== lPath && bp !== rPath) {
+				actions.push({ type: 'forget', path: bp });
+			}
+		}
+
+		const bPath = (lPath && base.has(lPath)) ? lPath : (rPath && base.has(rPath)) ? rPath : matchingBasePaths[0];
+		const b = bPath ? base.get(bPath) : undefined;
+
+		if (lItem && skip.has(lItem.path)) continue;
+		if (rItem && skip.has(rItem.path)) continue;
+
+		const l = lItem?.entry;
+		const r = rItem?.entry;
+
+		if (l && r) {
+			// Both local and remote exist under this canonical key
+			const lc = !b || l.mtime !== b.mtime || l.size !== b.size || (bPath !== undefined && lPath !== bPath);
+			const rc = !b || r.md5 !== b.md5 || (bPath !== undefined && rPath !== bPath);
+
+			if (lc && rc && lPath !== rPath) {
+				// Case mismatch and both modified -> conflict
+				actions.push({ type: 'conflict', path: lPath! });
+			} else if (lc || lPath !== rPath) {
+				// Local changed or local has a new case -> upload local version and trash old remote case
+				actions.push({ type: 'upload', path: lPath! });
+				if (rPath && rPath !== lPath) {
+					actions.push({ type: 'trashRemote', path: rPath });
+				}
+			} else if (rc) {
+				// Remote changed -> download remote version
+				actions.push({ type: 'download', path: rPath! });
+			}
+		} else if (l) {
+			// Present locally, absent remotely
+			const lc = !b || l.mtime !== b.mtime || l.size !== b.size;
+			if (!b || lc) {
+				actions.push({ type: 'upload', path: lPath! });
+			} else {
+				actions.push({ type: 'trashLocal', path: lPath! });
+			}
+		} else if (r) {
+			// Present remotely, absent locally
+			const rc = !b || r.md5 !== b.md5;
+			if (!b || rc) {
+				actions.push({ type: 'download', path: rPath! });
+			} else {
+				actions.push({ type: 'trashRemote', path: rPath! });
+			}
+		} else if (bPath) {
+			// Deleted on both sides
+			actions.push({ type: 'forget', path: bPath });
+		}
 	}
 
 	let blocked: string | undefined;
@@ -87,7 +167,6 @@ export async function apply(
 	if (p.blocked) throw new Error(`Sync blocked: ${p.blocked}`);
 	const res: ApplyResult = { done: 0, conflicts: [], errors: [] };
 
-	// Re-check each side right before touching it: the plan may be stale (edits during sync, other devices).
 	const editedLocally = (l: LocalEntry | undefined, b: BaseEntry | undefined) => !!l && (!b || changed(l, b));
 
 	const conflictName = async (path: string) => {
@@ -95,7 +174,7 @@ export async function apply(
 		const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}${pad(d.getMinutes())}`;
 		const slash = path.lastIndexOf('/') + 1;
 		const dot = path.lastIndexOf('.');
-		const cut = dot > slash ? dot : path.length; // ".hidden" / "README" → no extension
+		const cut = dot > slash ? dot : path.length;
 		const stem = `${path.slice(0, cut)} (${T.conflictWord} ${hooks.deviceName.replace(/\//g, '-')} ${stamp})`;
 		for (let n = 1; ; n++) {
 			const name = `${stem}${n > 1 ? ` ${n}` : ''}${path.slice(cut)}`;
@@ -113,7 +192,6 @@ export async function apply(
 			base.set(path, { mtime: l.mtime, size: l.size, md5: r.md5 });
 			return;
 		}
-		// Remote version → conflict copy on both sides, then local version over path. Both survive.
 		const copy = await conflictName(path);
 		const ce = await local.write(copy, rd, r.mtime);
 		const cr = await remote.write(copy, rd, r.mtime);
@@ -127,31 +205,41 @@ export async function apply(
 
 	const run: Record<Action['type'], (path: string) => Promise<void>> = {
 		upload: async (path) => {
-			const l = await local.stat(path); // stat before read: a later edit only causes a re-upload
-			if (!l) throw new Error(T.errLocalVanished);
+			const l = await local.stat(path);
+			if (!l) {
+				base.delete(path);
+				hooks.log?.(T.actionFailed('upload', path, T.errLocalVanished));
+				return;
+			}
 			const r = await remote.stat(path);
-			if (r && r.md5 !== base.get(path)?.md5) return conflict(path); // someone uploaded meanwhile
+			if (r && r.md5 !== base.get(path)?.md5) return conflict(path);
 			const w = await remote.write(path, await local.read(path), l.mtime);
 			base.set(path, { mtime: l.mtime, size: l.size, md5: w.md5 });
 		},
 		download: async (path) => {
 			const r = await remote.stat(path);
-			if (!r) throw new Error(T.errRemoteVanished);
+			if (!r) {
+				base.delete(path);
+				hooks.log?.(T.actionFailed('download', path, T.errRemoteVanished));
+				return;
+			}
 			const data = await remote.read(path);
-			if (editedLocally(await local.stat(path), base.get(path))) return conflict(path); // edited meanwhile
+			if (editedLocally(await local.stat(path), base.get(path))) return conflict(path);
 			const e = await local.write(path, data, r.mtime);
 			base.set(path, { mtime: e.mtime, size: e.size, md5: r.md5 });
 		},
 		conflict,
-		trashRemote: async (path) => {
+        trashRemote: async (path) => {
 			const r = await remote.stat(path);
-			if (r && r.md5 !== base.get(path)?.md5) throw new Error(T.errRemoteChanged);
+			const b = base.get(path);
+			if (r && b && r.md5 !== b.md5) throw new Error(T.errRemoteChanged);
 			if (r) await remote.trash(path);
 			base.delete(path);
 		},
 		trashLocal: async (path) => {
 			const l = await local.stat(path);
-			if (editedLocally(l, base.get(path))) throw new Error(T.errLocalChanged);
+			const b = base.get(path);
+			if (l && b && changed(l, b)) throw new Error(T.errLocalChanged);
 			if (l) await local.trash(path);
 			base.delete(path);
 		},
@@ -171,7 +259,7 @@ export async function apply(
 			res.errors.push({ path: a.path, error });
 			hooks.log?.(T.actionFailed(a.type, a.path, error));
 		}
-		await hooks.saveBase(base); // outside try: if state can't be saved, stop the whole sync
+		await hooks.saveBase(base);
 		hooks.onProgress?.(i + 1, queue.length, a);
 	}
 	return res;

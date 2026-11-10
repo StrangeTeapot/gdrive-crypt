@@ -3,12 +3,13 @@ name: Release
 
 on:
   push:
-    tags: ['*']
+    tags: ['2.*']
 
 permissions:
   contents: write
   id-token: write
   attestations: write
+  artifact-metadata: write
 
 jobs:
   release:
@@ -17,14 +18,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 26
           cache: npm
       - run: npm ci
       - run: npm run lint
-      - name: Tag must match manifest version
+      - name: Attest build provenance 
         run: test "$(node -p "require('./manifest.json').version")" = "$GITHUB_REF_NAME"
       - run: npm run build
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest@v4
         with:
           subject-path: |
             main.js

@@ -1,7 +1,7 @@
 {
 	"id": "gdrive-crypt-red",
 	"name": "Google Drive+",
-	"version": "1.0.1",
+	"version": "2.0.0",
 	"minAppVersion": "1.13.2",
 	"description": "Sync your vault across devices through your own Google Drive, end-to-end encrypted and compatible with rclone crypt.",
 	"author": "StrangeTeapot (original by mooncodee)",
