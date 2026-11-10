@@ -55,22 +55,21 @@
    ========================================================================== */
 
 .modal.cds-wizard-modal {
-	max-height: 85vh;
-	max-height: 85dvh;
+    max-height: 85dvh;
 	display: flex;
 	flex-direction: column;
 }
 
 .modal.cds-wizard-modal .modal-content {
-	overflow-y: auto !important;
+	overflow-y: auto;
 	-webkit-overflow-scrolling: touch;
 	padding-bottom: 160px; /* Extra bottom clearance for virtual keyboard */
 }
 
 /* Ensure native touch selection & paste context menu on mobile webviews */
-.cds-wizard-modal input[type="text"],
-.cds-wizard-modal input[type="password"],
-.cds-wizard-modal textarea {
-	-webkit-user-select: text !important;
-	user-select: text !important;
+.modal-container .cds-wizard-modal input[type="text"],
+.modal-container .cds-wizard-modal input[type="password"],
+.modal-container .cds-wizard-modal textarea {
+	-webkit-user-select: text;
+	user-select: text;
 }
