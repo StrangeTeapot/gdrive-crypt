@@ -321,5 +321,3 @@ This project is licensed under the [MIT License](https://www.google.com/search?q
 
 **Upstream Credits:**
 Forked and extended from [crypt-drive-sync](https://github.com/mooncodee/crypt-drive-sync) by [mooncodee](https://github.com/mooncodee).
-
-Source code was butchered by me and free AI models.
