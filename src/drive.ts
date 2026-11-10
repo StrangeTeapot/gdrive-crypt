@@ -1,4 +1,3 @@
-// src/drive.ts
 import type { RequestUrlParam } from 'obsidian';
 import type { Crypt } from './crypt.ts';
 import { T } from './i18n.ts';

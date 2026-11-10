@@ -1,4 +1,3 @@
-// src/main.ts
 import { Modal, Notice, Platform, Plugin, Setting, TFile, getLanguage, normalizePath, requestUrl, setIcon, setTooltip } from 'obsidian';
 import type { App } from 'obsidian';
 import { Crypt } from './crypt.ts';
