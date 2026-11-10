@@ -53,7 +53,10 @@ interface ApiError {
 
 const form = (o: Record<string, string>) => new URLSearchParams(o).toString();
 const esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-const buf = (u: Uint8Array): ArrayBuffer => u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength) as ArrayBuffer;
+const buf = (u: Uint8Array): ArrayBuffer => {
+	const b = u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength);
+	return b instanceof ArrayBuffer ? b : new ArrayBuffer(0);
+};
 
 export interface DeviceLogin {
 	userCode: string;
@@ -474,11 +477,11 @@ private async pruneFolderIfEmpty(folderId: string): Promise<boolean> {
 		return false;
 	}
 
-	async list(): Promise<{ files: Map<string, RemoteEntry>; warnings: string[] }> {
+async list(): Promise<{ files: Map<string, RemoteEntry>; warnings: string[] }> {
 		if (this.pageToken && this.files.size > 0) {
 			try {
 				return await this.listIncremental(this.pageToken);
-			} catch (e) {
+			} catch {
 				// Fallback to full list if incremental token has expired or is invalid
 			}
 		}
