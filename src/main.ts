@@ -235,10 +235,9 @@ async sync(opts: { quiet?: boolean; dryRun?: boolean } = {}): Promise<void> {
 	}
 
 private finish(msg: string, notify: boolean, failed = false, hasWarnings = false) {
-		this.lastSyncAt = Date.now();
-		this.lastResult = `${new Date().toLocaleString()}: ${msg}`;
-		this.log(msg);
-		if (failed) console.error(`crypt-drive-sync: ${msg}`);
+    this.lastSyncAt = Date.now();
+    this.lastResult = `${new Date().toLocaleString()}: ${msg}`;
+    this.log(msg);
 
 		this.setStatus(
 			failed || hasWarnings ? T.statusError : T.statusOk(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
@@ -665,7 +664,6 @@ export function parseRawRegex(text: string): RegExp[] {
 			try {
 				return new RegExp(pattern);
 			} catch {
-				console.warn(`[CryptDriveSync] Invalid exclusion regex pattern: ${pattern}`);
 				return null;
 			}
 		})
