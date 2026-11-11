@@ -112,6 +112,164 @@ export default class CryptDriveSync extends Plugin {
 		}).open();
 	}
 
+		/** Safely removes empty subdirectories inside _deleted for deleted paths without touching root _deleted. */
+	private async cleanEmptyTrashFolders(remote: CryptDriveFs, deletedPaths: string[]): Promise<void> {
+		if (!deletedPaths.length) return;
+
+		const folderCandidates = new Set<string>();
+
+		for (const path of deletedPaths) {
+			const parts = path.split('/');
+			parts.pop(); // Remove file name
+
+			while (parts.length > 0) {
+				const dirPath = parts.join('/');
+				if (dirPath && dirPath !== '_deleted' && dirPath !== '.') {
+					folderCandidates.add(dirPath);
+				}
+				parts.pop();
+			}
+		}
+
+		const sortedFolders = Array.from(folderCandidates).sort((a, b) => b.length - a.length);
+
+		try {
+			const { files } = await remote.list();
+
+			for (const folderPath of sortedFolders) {
+				const prefix = `${folderPath}/`;
+				let hasRemainingFiles = false;
+
+				for (const activePath of files.keys()) {
+					if (activePath.startsWith(prefix)) {
+						hasRemainingFiles = true;
+						break;
+					}
+				}
+
+				if (!hasRemainingFiles) {
+					try {
+						await remote.trash(folderPath);
+						for (const activePath of Array.from(files.keys())) {
+							if (activePath === folderPath || activePath.startsWith(prefix)) {
+								files.delete(activePath);
+							}
+						}
+					} catch {
+						// Ignore folder deletion errors safely
+					}
+				}
+			}
+		} catch {
+			// Ignore cleanup errors silently
+		}
+	}
+
+	/** Permanently deletes both vault files and backups for this vault from remote _deleted across all date folders. */
+	async emptyTrash(): Promise<void> {
+		const notice = new Notice('Emptying remote trash folder...', 0);
+		try {
+			const remote = await this.remote(true, '_deleted');
+			if (!remote) {
+				notice.hide();
+				return;
+			}
+
+			const vaultName = PathSanitizer.sanitizeVaultName(this.settings.folder, this.app.vault.getName());
+			const vaultNotesSubpath = `vaults/${vaultName}/`;
+			const vaultBackupsSubpath = `_backups/${vaultName}/`;
+
+			const { files } = await remote.list();
+			let count = 0;
+			const deletedPaths: string[] = [];
+
+			for (const [path] of files.entries()) {
+				// Match items in either vaults/[vault_name]/ or _backups/[vault_name]/
+				const isVaultItem = path.includes(vaultNotesSubpath) || path.includes(vaultBackupsSubpath);
+				if (!isVaultItem) continue;
+
+				try {
+					await remote.trash(path);
+					count++;
+					deletedPaths.push(path);
+				} catch (err) {
+					this.log(`\u26a0 Failed to remove ${path} from trash: ${String(err)}`);
+				}
+			}
+
+			if (count === 0) {
+				notice.hide();
+				new Notice(`Remote trash for vault "${vaultName}" is already empty.`);
+				return;
+			}
+
+			await this.cleanEmptyTrashFolders(remote, deletedPaths);
+
+			notice.hide();
+			new Notice(`Remote trash emptied (${count} item(s) removed for vault "${vaultName}").`);
+			this.log(`Emptied remote trash for vault "${vaultName}" (${count} item(s) deleted).`);
+		} catch (e) {
+			notice.hide();
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`Failed to empty trash: ${msg}`);
+			this.log(`\u26a0 Empty trash error: ${msg}`);
+		}
+	}
+
+	/** Automatically prunes expired vault files and backups in _deleted older than trashRetentionDays. */
+	async pruneTrash(): Promise<void> {
+		const retentionDays = Number(this.settings.trashRetentionDays || 0);
+		if (retentionDays <= 0) return;
+
+		const remote = await this.remote(false, '_deleted');
+		if (!remote) return;
+
+		const vaultName = PathSanitizer.sanitizeVaultName(this.settings.folder, this.app.vault.getName());
+		const vaultNotesSubpath = `vaults/${vaultName}/`;
+		const vaultBackupsSubpath = `_backups/${vaultName}/`;
+		const cutoffTime = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+
+		try {
+			const { files } = await remote.list();
+			let prunedCount = 0;
+			const deletedPaths: string[] = [];
+
+			for (const [path, entry] of files.entries()) {
+				// Skip items belonging to other vaults
+				const isVaultItem = path.includes(vaultNotesSubpath) || path.includes(vaultBackupsSubpath);
+				if (!isVaultItem) continue;
+
+				// Extract date from YYYY-MM-DD prefix in path
+				const dateMatch = path.match(/^(\d{4}-\d{2}-\d{2})/);
+				let fileTimestamp = entry.mtime;
+
+				if (dateMatch && dateMatch[1]) {
+					const parsedDate = Date.parse(dateMatch[1]);
+					if (!isNaN(parsedDate)) {
+						fileTimestamp = parsedDate;
+					}
+				}
+
+				if (fileTimestamp && fileTimestamp < cutoffTime) {
+					try {
+						await remote.trash(path);
+						prunedCount++;
+						deletedPaths.push(path);
+						this.log(`Pruned expired trashed item for "${vaultName}" (${retentionDays}+ days old): ${path}`);
+					} catch (err) {
+						this.log(`\u26a0 Failed to prune trashed item ${path}: ${String(err)}`);
+					}
+				}
+			}
+
+			if (prunedCount > 0) {
+				await this.cleanEmptyTrashFolders(remote, deletedPaths);
+			}
+		} catch (e) {
+			this.log(`\u26a0 Trash prune check failed: ${String(e)}`);
+		}
+	}
+
 	exportConfigPayload(): string {
 		const payload = {
 			version: 1,
@@ -216,7 +374,7 @@ export default class CryptDriveSync extends Plugin {
 	getRemoteSubsystemPath(subsystem: 'vaults' | '_backups' | '_deleted'): string {
 		const root = PathSanitizer.sanitizeRootPath(this.settings.rootPath);
 		const vaultName = PathSanitizer.sanitizeVaultName(this.settings.folder, this.app.vault.getName());
-		return `${root}/${subsystem}/${vaultName}`;
+		return subsystem === '_deleted' ? `${root}/_deleted` : `${root}/${subsystem}/${vaultName}`;
 	}
 
 	getRemoteVaultPath(): string {
@@ -372,6 +530,7 @@ export default class CryptDriveSync extends Plugin {
 					if (base !== this.base) throw new Error(T.staleSettings);
 					this.remoteFilesCache = remote.getFilesCache();
 					await this.saveBase(currentLocalDirs);
+					void this.pruneTrash();
 				},
 				onProgress: (done, total) => this.setStatus(`${T.statusRunning} ${done}/${total}`, T.statusTip(this.lastResult), true),
 				log: (m) => this.log(m),
@@ -523,7 +682,7 @@ export default class CryptDriveSync extends Plugin {
 		const auth = new GoogleAuth(req, c.id, c.secret, this.secret(TOKEN_ID));
 		const crypt = (await this.getCrypt())!;
 		const vaultName = PathSanitizer.sanitizeVaultName(s.folder, this.app.vault.getName());
-		const remoteSubFolder = `${subsystem}/${vaultName}`;
+		const remoteSubFolder = subsystem === '_deleted' ? '_deleted' : `${subsystem}/${vaultName}`;
 		const isVault = subsystem === 'vaults';
 
 		return new CryptDriveFs(
@@ -532,7 +691,7 @@ export default class CryptDriveSync extends Plugin {
 			{
 				rootPath: s.rootPath,
 				folder: remoteSubFolder,
-				trashDir: s.trashDir,
+				trashDir: subsystem === '_deleted' ? '' : s.trashDir,
 				createRoot: this.createRoot,
 				dirNameEncrypt: s.dirNameEncrypt,
 			},

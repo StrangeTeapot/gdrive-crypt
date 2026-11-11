@@ -494,7 +494,6 @@ export class RemoteBackupsModal extends Modal {
 				const restoreBtn = new ButtonComponent(actionsEl);
 				restoreBtn
 					.setButtonText('Restore vault')
-					.setDestructive()
 					.onClick(async () => {
 						const confirmed = await new ConfirmModal(
 							this.app,

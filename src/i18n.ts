@@ -117,11 +117,17 @@ const en = {
 	errLocalChanged: 'changed on this device after the check — not deleted',
 
     // settings export
-exportName: 'Export setup configuration',
-exportDesc: 'Copy your credentials and sync settings to clipboard for quick import on iOS/Android.',
-importName: 'Import setup configuration',
-importDesc: 'Paste a settings payload to restore account credentials and skip the setup wizard.',
+    exportNameQr: 'Export setup configuration (QR Code)',
+	exportDescQr: 'Display a QR code on screen to quickly scan and pair this vault configuration with iOS or Android.',
+	exportName: 'Export setup configuration',
+    exportDesc: 'Copy your credentials and sync settings to clipboard for quick import on iOS/Android.',
+    importName: 'Import setup configuration',
+    importDesc: 'Paste a settings payload to restore account credentials and skip the setup wizard.',
 
+	trashRetentionName: 'Trash retention (days)',
+	trashRetentionDesc: 'Automatically delete files from remote trash (_deleted) older than this many days. Set to 0 to keep files indefinitely.',
+    emptyTrashName: 'Empty trash folder',
+    emptyTrashDesc: 'Permanently remove all files currently stored in the remote trash directory (_deleted) on Google Drive.',
 
 	// settings: main screen
 	setupName: 'Set up',
@@ -354,11 +360,18 @@ const ru: Dict = {
 	errRemoteChanged: 'изменён в облаке после проверки — не удалён',
 	errLocalChanged: 'изменён на устройстве после проверки — не удалён',
 
-	    // settings export
-exportName: 'Export setup configuration',
-exportDesc: 'Copy your credentials and sync settings to clipboard for quick import on iOS/Android.',
-importName: 'Import setup configuration',
-importDesc: 'Paste a settings payload to restore account credentials and skip the setup wizard.',
+	// settings export
+	exportNameQr: 'Export setup configuration (QR Code)',
+    exportDescQr: 'Display a QR code on screen to quickly scan and pair this vault configuration with iOS or Android.',
+	exportName: 'Export setup configuration',
+    exportDesc: 'Copy your credentials and sync settings to clipboard for quick import on iOS/Android.',
+    importName: 'Import setup configuration',
+    importDesc: 'Paste a settings payload to restore account credentials and skip the setup wizard.',
+
+	trashRetentionName: 'Trash retention (days)',
+	trashRetentionDesc: 'Automatically delete files from remote trash (_deleted) older than this many days. Set to 0 to keep files indefinitely.',
+    emptyTrashName: 'Empty trash folder',
+    emptyTrashDesc: 'Permanently remove all files currently stored in the remote trash directory (_deleted) on Google Drive.',
 
 	setupName: 'Настройка',
 	setupDesc: 'Пошагово: клиент Google Cloud, вход, папка, пароль. В первый раз минут десять, на следующем устройстве — две.',

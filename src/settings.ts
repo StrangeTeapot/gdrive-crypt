@@ -10,6 +10,7 @@ export interface Settings {
 	rootPath: string;
 	folder: string;
 	trashDir: string;
+	trashRetentionDays: number; // 0 = keep indefinitely, >0 = auto-prune days
 	syncOnStart: boolean;
 	intervalMin: number;
 	afterEditSec: number;
@@ -37,6 +38,7 @@ export const DEFAULTS: Settings = {
 	rootPath: 'crypt-drive-sync',
 	folder: '', // empty → the vault's name (set on load)
 	trashDir: '_deleted',
+	trashRetentionDays: 30,
 	syncOnStart: true,
 	intervalMin: 10,
 	afterEditSec: 30,
@@ -215,9 +217,19 @@ async setControlValue(key: string, value: unknown): Promise<void> {
 						type: 'group',
 						heading: T.hMaintenance,
 						items: [
+							{
+    name: T.trashRetentionName,
+    desc: T.trashRetentionDesc,
+    control: { type: 'number', key: 'trashRetentionDays', min: 0, step: 1 },
+},
+{
+    name: T.emptyTrashName,
+    desc: T.emptyTrashDesc,
+    action: () => void p.emptyTrash(),
+},
 							{ 
-								name: 'Export setup configuration (QR Code)', 
-								desc: 'Display a QR code on screen to quickly scan and pair this vault configuration with iOS or Android.', 
+								name: T.exportNameQr, 
+								desc: T.exportDescQr, 
 								action: () => p.showQrExportModal() 
 							},
 							{ 
