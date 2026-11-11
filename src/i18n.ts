@@ -48,7 +48,7 @@ const en = {
 	backupEnabledName: 'Enable backups',
 	backupEnabledDesc: 'Allow manual full vault backups.',
 	maxBackupsName: 'Backups to keep (1–10)',
-	maxBackupsDesc: 'Automatically delete oldest backups when exceeding this limit.',
+	maxBackupsDesc: 'Maximum number of remote backups to retain on Google Drive (0–10). Set to 0 to disable automatic pruning.',
 	keepLocalName: 'Keep local copy',
 	keepLocalDesc: 'Save an unencrypted ZIP copy of the backup inside your vault folder.',
 	localFolderDesc: 'Folder path inside vault for local backup storage.',
@@ -113,6 +113,13 @@ const en = {
 	errRemoteVanished: 'file disappeared from the cloud',
 	errRemoteChanged: 'changed in the cloud after the check — not deleted',
 	errLocalChanged: 'changed on this device after the check — not deleted',
+
+    // settings export
+exportName: 'Export setup configuration',
+exportDesc: 'Copy your credentials and sync settings to clipboard for quick import on iOS/Android.',
+importName: 'Import setup configuration',
+importDesc: 'Paste a settings payload to restore account credentials and skip the setup wizard.',
+
 
 	// settings: main screen
 	setupName: 'Set up',
@@ -283,7 +290,7 @@ const ru: Dict = {
 	backupEnabledName: 'Включить бэкапы',
 	backupEnabledDesc: 'Разрешить ручное создание полных копий хранилища.',
 	maxBackupsName: 'Хранить бэкапов (1–10)',
-	maxBackupsDesc: 'Автоматически удалять старые копии при превышении лимита.',
+	maxBackupsDesc: 'Автоматически удалять старые копии при превышении лимита. Выставьте 0 чтобы копии не удалялись автоматически.',
 	keepLocalName: 'Сохранять локальную копию',
 	keepLocalDesc: 'Сохранять незашифрованную ZIP-копию бэкапа внутри папки хранилища.',
 	localFolderDesc: 'Путь к папке внутри хранилища для локальных бэкапов.',
@@ -342,6 +349,12 @@ const ru: Dict = {
 	errRemoteVanished: 'файл исчез из облака',
 	errRemoteChanged: 'изменён в облаке после проверки — не удалён',
 	errLocalChanged: 'изменён на устройстве после проверки — не удалён',
+
+	    // settings export
+exportName: 'Export setup configuration',
+exportDesc: 'Copy your credentials and sync settings to clipboard for quick import on iOS/Android.',
+importName: 'Import setup configuration',
+importDesc: 'Paste a settings payload to restore account credentials and skip the setup wizard.',
 
 	setupName: 'Настройка',
 	setupDesc: 'Пошагово: клиент Google Cloud, вход, папка, пароль. В первый раз минут десять, на следующем устройстве — две.',

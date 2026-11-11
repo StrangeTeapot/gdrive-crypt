@@ -1,17 +1,17 @@
 import { Modal, Notice, Platform, Plugin, Setting, TFile, getLanguage, normalizePath, requestUrl, setIcon, setTooltip } from 'obsidian';
 import type { App } from 'obsidian';
-import { Crypt } from './crypt.ts';
-import { CryptDriveFs, DriveClient, GoogleAuth, RootMissingError, parseRefreshToken, pollDeviceLogin, startDeviceLogin } from './drive.ts';
-import type { CachedRemoteFile, Request } from './drive.ts';
-import { T, setLanguage } from './i18n.ts';
-import { CryptDriveSyncSettingTab, DEFAULTS } from './settings.ts';
-import type { Settings } from './settings.ts';
-import { apply, plan } from './sync.ts';
-import type { Action, Plan } from './sync.ts';
-import type { BaseEntry, LocalEntry, LocalFs, RemoteEntry } from './types.ts';
-import { SetupWizard } from './wizard.ts';
-import { BackupManager } from './backup.ts';
-import { PathSanitizer } from './sanitizer.ts';
+import { Crypt } from './crypt';
+import { CryptDriveFs, DriveClient, GoogleAuth, RootMissingError, parseRefreshToken, pollDeviceLogin, startDeviceLogin } from './drive';
+import type { CachedRemoteFile, Request } from './drive';
+import { T, setLanguage } from './i18n';
+import { CryptDriveSyncSettingTab, DEFAULTS } from './settings';
+import type { Settings } from './settings';
+import { apply, plan } from './sync';
+import type { Action, Plan } from './sync';
+import type { BaseEntry, LocalEntry, LocalFs, RemoteEntry } from './types';
+import { SetupWizard } from './wizard';
+import { BackupManager, RemoteBackupsModal } from './backup';
+import { PathSanitizer } from './sanitizer';
 
 const TOKEN_ID = 'token';
 export const PASSWORD_ID = 'password';
@@ -22,6 +22,67 @@ declare const GOOGLE_CLIENT: { id: string; secret: string };
 
 const MIN_DELETE_COUNT = 10;
 const req = requestUrl as unknown as Request;
+
+interface PayloadData {
+	v?: number;
+	s?: {
+		r?: string;
+		f?: string;
+		e?: boolean;
+		t?: string;
+	};
+	sec?: {
+		p?: string;
+		s?: string;
+		cs?: string;
+	};
+	settings?: Partial<Settings>;
+	secrets?: {
+		password?: string;
+		salt?: string;
+		clientSecret?: string;
+	};
+}
+
+export class QrCodeExportModal extends Modal {
+	private payload: string;
+
+	constructor(app: App, payload: string) {
+		super(app);
+		this.payload = payload;
+		this.setTitle('Scan qr code to transfer setup');
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.createEl('p', {
+			text: 'Scan this qr code from your mobile device or copy the raw payload string to import settings.',
+			cls: 'cds-backup-meta',
+		});
+
+		const container = contentEl.createDiv({ cls: 'cds-qr-container' });
+
+		const qrImg = container.createEl('img', { cls: 'cds-qr-image' });
+		qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(this.payload)}`;
+		qrImg.alt = 'Setup QR Code';
+
+		new Setting(contentEl)
+			.addButton((btn) =>
+				btn
+					.setButtonText('Copy raw payload string')
+					.onClick(async () => {
+						await navigator.clipboard.writeText(this.payload);
+						new Notice('Qr payload string copied to clipboard!');
+					}),
+			)
+			.addButton((btn) => btn.setButtonText('Close').onClick(() => this.close()));
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
 
 export default class CryptDriveSync extends Plugin {
 	settings: Settings = { ...DEFAULTS };
@@ -39,7 +100,117 @@ export default class CryptDriveSync extends Plugin {
 	private editedDuringSync = false;
 	private createRoot = false;
 
-	backupManager = new BackupManager(this);
+	backupManager!: BackupManager;
+
+	async saveSettings(): Promise<void> {
+		await this.saveData(this.settings);
+	}
+
+	async promptImportConfig(): Promise<void> {
+		new ImportConfigModal(this.app, async (rawJson) => {
+			await this.importCompactConfig(rawJson);
+		}).open();
+	}
+
+	exportConfigPayload(): string {
+		const payload = {
+			version: 1,
+			settings: {
+				rootPath: this.settings.rootPath,
+				folder: this.settings.folder,
+				dirNameEncrypt: this.settings.dirNameEncrypt,
+				trashDir: this.settings.trashDir,
+				syncOnStart: this.settings.syncOnStart,
+				intervalMin: this.settings.intervalMin,
+				afterEditSec: this.settings.afterEditSec,
+				exclude: this.settings.exclude,
+				maxFileMb: this.settings.maxFileMb,
+				maxDeletePct: this.settings.maxDeletePct,
+				backupEnabled: this.settings.backupEnabled,
+				maxBackups: this.settings.maxBackups,
+				localBackupFolder: this.settings.localBackupFolder,
+				syncDotFolders: this.settings.syncDotFolders,
+				useRawRegex: this.settings.useRawRegex,
+				wizardDone: true,
+			},
+			secrets: {
+				password: this.secret(PASSWORD_ID) || '',
+				salt: this.secret(SALT_ID) || '',
+				clientSecret: this.secret(CLIENT_SECRET_ID) || '',
+			},
+		};
+		return JSON.stringify(payload);
+	}
+
+	exportConfigPayloadCompact(): string {
+		const payload = {
+			v: 1,
+			s: {
+				r: this.settings.rootPath,
+				f: this.settings.folder,
+				e: this.settings.dirNameEncrypt,
+				t: this.settings.trashDir,
+			},
+			sec: {
+				p: this.secret(PASSWORD_ID) || '',
+				s: this.secret(SALT_ID) || '',
+				cs: this.secret(CLIENT_SECRET_ID) || '',
+			},
+		};
+		return JSON.stringify(payload);
+	}
+
+	async exportConfigToClipboard(): Promise<void> {
+		try {
+			const jsonString = this.exportConfigPayloadCompact();
+			await navigator.clipboard.writeText(jsonString);
+			new Notice('Configuration payload copied to clipboard!');
+		} catch (e) {
+			new Notice(`Failed to copy to clipboard: ${String(e)}`);
+		}
+	}
+
+	async importConfig(rawJson: string): Promise<void> {
+		await this.importCompactConfig(rawJson);
+	}
+
+	async importCompactConfig(rawJson: string): Promise<void> {
+		try {
+			const data = JSON.parse(rawJson) as PayloadData | null;
+			if (!data || typeof data !== 'object') throw new Error('Invalid JSON format');
+
+			if (data.v === 1 && data.s) {
+				if (data.s.r) this.settings.rootPath = data.s.r;
+				if (data.s.f) this.settings.folder = data.s.f;
+				if (typeof data.s.e === 'boolean') this.settings.dirNameEncrypt = data.s.e;
+				if (data.s.t) this.settings.trashDir = data.s.t;
+				this.settings.wizardDone = true;
+				await this.saveSettings();
+
+				if (data.sec) {
+					if (data.sec.p) await this.setSecret(PASSWORD_ID, data.sec.p);
+					if (data.sec.s) await this.setSecret(SALT_ID, data.sec.s);
+					if (data.sec.cs) await this.setSecret(CLIENT_SECRET_ID, data.sec.cs);
+				}
+			} else if (data.settings) {
+				this.settings = { ...this.settings, ...data.settings, wizardDone: true };
+				await this.saveSettings();
+				if (data.secrets) {
+					if (data.secrets.password) await this.setSecret(PASSWORD_ID, data.secrets.password);
+					if (data.secrets.salt) await this.setSecret(SALT_ID, data.secrets.salt);
+					if (data.secrets.clientSecret) await this.setSecret(CLIENT_SECRET_ID, data.secrets.clientSecret);
+				}
+			}
+
+			new Notice('Configuration imported successfully! Ready to sync.');
+		} catch (e) {
+			new Notice(`Import failed: ${String(e)}`);
+		}
+	}
+
+	showQrExportModal(): void {
+		new QrCodeExportModal(this.app, this.exportConfigPayloadCompact()).open();
+	}
 
 	getRemoteSubsystemPath(subsystem: 'vaults' | '_backups' | '_deleted'): string {
 		const root = PathSanitizer.sanitizeRootPath(this.settings.rootPath);
@@ -57,6 +228,8 @@ export default class CryptDriveSync extends Plugin {
 		this.settings = { ...DEFAULTS, ...((await this.loadData()) as Partial<Settings> | null) };
 		if (!this.settings.folder) this.settings.folder = this.app.vault.getName();
 		this.base = await this.loadBase();
+
+		this.backupManager = new BackupManager(this);
 
 		this.addSettingTab(new CryptDriveSyncSettingTab(this));
 		this.addRibbonIcon('refresh-cw', T.ribbon, () => void this.sync());
@@ -77,6 +250,7 @@ export default class CryptDriveSync extends Plugin {
 		this.addCommand({ id: 'reset-state', name: T.cmdReset, callback: () => void this.resetState(true) });
 		this.addCommand({ id: 'setup', name: T.cmdWizard, callback: () => this.openWizard() });
 		this.addCommand({ id: 'forget-device', name: T.forgetName, callback: () => void this.forgetDevice() });
+		this.addCommand({ id: 'explore-remote-backups', name: 'Remote backup explorer', callback: () => new RemoteBackupsModal(this, this.backupManager).open() });
 
 		this.app.workspace.onLayoutReady(() => {
 			if (!this.ready()) {
@@ -85,6 +259,21 @@ export default class CryptDriveSync extends Plugin {
 				void this.sync({ quiet: true });
 			}
 		});
+
+		// clean reinstall if user manually deleted plugin folder
+		const rawData: unknown = await this.loadData();
+		const isFreshInstall = rawData === null || rawData === undefined;
+
+		this.settings = { ...DEFAULTS, ...(rawData as Partial<Settings> | null) };
+
+		// If plugin folder was manually wiped on disk, clear orphaned keychain secrets
+		if (isFreshInstall) {
+			const deviceId = this.deviceId();
+			for (const key of [TOKEN_ID, PASSWORD_ID, SALT_ID, CLIENT_SECRET_ID]) {
+				this.app.secretStorage.setSecret(`crypt-drive-sync-${deviceId}-${key}`, '');
+				this.app.secretStorage.setSecret(`crypt-drive-sync-${key}`, '');
+			}
+		}
 
 		const onEdit = () => {
 			const sec = Number(this.settings.afterEditSec);
@@ -127,7 +316,7 @@ export default class CryptDriveSync extends Plugin {
 		window.clearTimeout(this.editTimer);
 	}
 
-async sync(opts: { quiet?: boolean; dryRun?: boolean } = {}): Promise<void> {
+	async sync(opts: { quiet?: boolean; dryRun?: boolean } = {}): Promise<void> {
 		if (this.running) {
 			if (!opts.quiet) new Notice(`${T.noticePrefix}: Sync is already in progress...`);
 			return;
@@ -165,7 +354,7 @@ async sync(opts: { quiet?: boolean; dryRun?: boolean } = {}): Promise<void> {
 				}
 				p = { ...plan(l, r.files, base, { minDeleteCount: Infinity, maxDeletePct: 100 }), warnings: p.warnings };
 			}
-            if (!p.actions.length) {
+			if (!p.actions.length) {
 				await this.saveBase();
 				const hasWarn = p.warnings.length > 0;
 				const msg = hasWarn ? `${T.noChanges} (${p.warnings.length} warning(s) — see log)` : T.noChanges;
@@ -191,7 +380,7 @@ async sync(opts: { quiet?: boolean; dryRun?: boolean } = {}): Promise<void> {
 			this.remoteFilesCache = remote.getFilesCache();
 			await this.saveBase(currentLocalDirs);
 
-            const n = (t: Action['type']) => p.actions.filter((a) => a.type === t).length;
+			const n = (t: Action['type']) => p.actions.filter((a) => a.type === t).length;
 			const parts = T.summary(n('upload'), n('download'));
 			if (n('trashRemote') + n('trashLocal')) parts.push(T.sumTrashed(n('trashRemote') + n('trashLocal')));
 			if (res.conflicts.length) parts.push(T.sumConflicts(res.conflicts.length));
@@ -233,10 +422,10 @@ async sync(opts: { quiet?: boolean; dryRun?: boolean } = {}): Promise<void> {
 		return warnings;
 	}
 
-private finish(msg: string, notify: boolean, failed = false, hasWarnings = false) {
-    this.lastSyncAt = Date.now();
-    this.lastResult = `${new Date().toLocaleString()}: ${msg}`;
-    this.log(msg);
+	private finish(msg: string, notify: boolean, failed = false, hasWarnings = false) {
+		this.lastSyncAt = Date.now();
+		this.lastResult = `${new Date().toLocaleString()}: ${msg}`;
+		this.log(msg);
 
 		this.setStatus(
 			failed || hasWarnings ? T.statusError : T.statusOk(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
@@ -244,10 +433,8 @@ private finish(msg: string, notify: boolean, failed = false, hasWarnings = false
 		);
 
 		if (failed || hasWarnings) {
-			// Center-screen blocking window modal (iOS, Android, Windows, Mac, Linux)
 			new AlertModal(this.app, T.noticePrefix, msg).open();
 		} else if (notify) {
-			// Toast notification for clean syncs
 			new Notice(`${T.noticePrefix}: ${msg}`);
 		}
 	}
@@ -336,6 +523,8 @@ private finish(msg: string, notify: boolean, failed = false, hasWarnings = false
 		const crypt = (await this.getCrypt())!;
 		const vaultName = PathSanitizer.sanitizeVaultName(s.folder, this.app.vault.getName());
 		const remoteSubFolder = `${subsystem}/${vaultName}`;
+		const isVault = subsystem === 'vaults';
+
 		return new CryptDriveFs(
 			new DriveClient(req, auth),
 			crypt,
@@ -347,8 +536,8 @@ private finish(msg: string, notify: boolean, failed = false, hasWarnings = false
 				dirNameEncrypt: s.dirNameEncrypt,
 			},
 			(encSize: number) => Crypt.decryptedSize(encSize),
-			this.pageToken,
-			this.remoteFilesCache,
+			isVault ? this.pageToken : undefined,
+			isVault ? this.remoteFilesCache : undefined,
 		);
 	}
 
@@ -407,10 +596,17 @@ private finish(msg: string, notify: boolean, failed = false, hasWarnings = false
 
 	async forgetDevice(onDone: () => void = () => {}): Promise<void> {
 		if (!(await new ConfirmModal(this.app, T.forgetName, T.forgetConfirm, T.forgetButton).ask())) return;
-		for (const key of [TOKEN_ID, PASSWORD_ID, SALT_ID, CLIENT_SECRET_ID]) {
-			this.storeSecret(key, '');
+		
+		const deviceId = this.deviceId();
+		const keys = [TOKEN_ID, PASSWORD_ID, SALT_ID, CLIENT_SECRET_ID];
+		
+		for (const key of keys) {
+			// Clear scoped secret storage
+			this.app.secretStorage.setSecret(`crypt-drive-sync-${deviceId}-${key}`, '');
+			// Clear legacy un-scoped secret storage
 			this.app.secretStorage.setSecret(`crypt-drive-sync-${key}`, '');
 		}
+		
 		this.settings = { ...DEFAULTS, folder: this.app.vault.getName() };
 		await this.saveData(this.settings);
 		await this.resetState();
@@ -436,6 +632,11 @@ private finish(msg: string, notify: boolean, failed = false, hasWarnings = false
 
 	openLog() {
 		new TextModal(this.app, T.logTitle, this.logLines.join('\n') || T.logEmpty).open();
+	}
+
+	async setBase(newBase: Map<string, BaseEntry>): Promise<void> {
+		this.base = newBase;
+		await this.saveBase();
 	}
 
 	async resetState(notify = false): Promise<void> {
@@ -850,5 +1051,48 @@ class LoginModal extends Modal {
 		this.abort.abort();
 		this.contentEl.empty();
 		this.resolve?.(this.token);
+	}
+}
+
+class ImportConfigModal extends Modal {
+	private onSubmit: (rawJson: string) => Promise<void>;
+
+	constructor(app: App, onSubmit: (rawJson: string) => Promise<void>) {
+		super(app);
+		this.onSubmit = onSubmit;
+		this.setTitle('Import configuration payload');
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.createEl('p', { text: 'Paste your exported configuration JSON or scanned qr payload string below:' });
+
+		let textValue = '';
+		new Setting(contentEl)
+			.addTextArea((text) =>
+				text
+					.setPlaceholder('{"v":1,"s":{...},"sec":{...}}')
+					.onChange((val) => {
+						textValue = val;
+					}),
+			);
+
+		new Setting(contentEl)
+			.addButton((btn) =>
+				btn
+					.setButtonText('Import & apply')
+					.setCta()
+					.onClick(async () => {
+						if (!textValue.trim()) return;
+						this.close();
+						await this.onSubmit(textValue.trim());
+					}),
+			)
+			.addButton((btn) => btn.setButtonText('Cancel').onClick(() => this.close()));
+	}
+
+	onClose() {
+		this.contentEl.empty();
 	}
 }

@@ -21,9 +21,9 @@ export interface Settings {
 	wizardDone: boolean;
 	// AI CODE backup feature
 	backupEnabled: boolean;
-    maxBackups: number;
-    backupKeepLocal: boolean;
-    localBackupFolder: string;
+	maxBackups: number;
+	backupKeepLocal: boolean;
+	localBackupFolder: string;
 	syncDotFolders: boolean;
 	useRawRegex: boolean;
 }
@@ -47,9 +47,9 @@ export const DEFAULTS: Settings = {
 	wizardDone: false,
 	// AI CODE backup feature
 	backupEnabled: true,
-    maxBackups: 5,
-    backupKeepLocal: false,
-    localBackupFolder: 'backups',
+	maxBackups: 5,
+	backupKeepLocal: false,
+	localBackupFolder: 'backups',
 	syncDotFolders: false,
 	useRawRegex: false,
 };
@@ -162,30 +162,30 @@ async setControlValue(key: string, value: unknown): Promise<void> {
 				name: T.advancedName,
 				desc: T.advancedDesc,
 				items: [
-{
-	type: 'group',
-	heading: T.hSync,
-	items: [
-		{ name: T.onStartName, desc: T.onStartDesc, control: { type: 'toggle', key: 'syncOnStart' } },
-		{ name: T.intervalName, desc: T.intervalDesc, control: { type: 'number', key: 'intervalMin', min: 0, step: 1 } },
-		{ name: T.afterEditName, desc: T.afterEditDesc, control: { type: 'number', key: 'afterEditSec', min: 0, step: 1 } },
-		{ name: T.excludeName, desc: T.excludeDesc, control: { type: 'textarea', key: 'exclude', rows: 4, placeholder: 'Private/**\n**/*.mp4' } },
-		{ 
-			name: 'Use raw Regex for exclusion', 
-			desc: 'Interpret exclude patterns as raw JavaScript regular expressions instead of glob wildcards.', 
-			control: { type: 'toggle', key: 'useRawRegex' } 
-		},
-		{ 
-			name: 'Sync dot-folders (Experimental)', 
-			desc: `Allow hidden directories (e.g. ${this.plugin.app.vault.configDir}) to sync. Warning: May cause platform layout/plugin setting collisions across devices.`, 
-			control: { type: 'toggle', key: 'syncDotFolders' } 
-		},
-		{ name: T.maxSizeName, desc: T.maxSizeDesc, control: { type: 'number', key: 'maxFileMb', min: 1, step: 1 } },
-		{ name: T.massDeleteName, desc: T.massDeleteDesc, control: { type: 'number', key: 'maxDeletePct', min: 1, max: 100, step: 1 } },
-		{ name: T.confirmPlanName, desc: T.confirmPlanDesc, control: { type: 'toggle', key: 'confirmPlan' } },
-		{ name: T.deviceName, desc: T.deviceDesc, control: { type: 'text', key: 'deviceName', placeholder: p.defaultDeviceName() } },
-	],
-},
+					{
+						type: 'group',
+						heading: T.hSync,
+						items: [
+							{ name: T.onStartName, desc: T.onStartDesc, control: { type: 'toggle', key: 'syncOnStart' } },
+							{ name: T.intervalName, desc: T.intervalDesc, control: { type: 'number', key: 'intervalMin', min: 0, step: 1 } },
+							{ name: T.afterEditName, desc: T.afterEditDesc, control: { type: 'number', key: 'afterEditSec', min: 0, step: 1 } },
+							{ name: T.excludeName, desc: T.excludeDesc, control: { type: 'textarea', key: 'exclude', rows: 4, placeholder: 'Private/**\n**/*.mp4' } },
+							{ 
+								name: 'Use raw Regex for exclusion', 
+								desc: 'Interpret exclude patterns as raw JavaScript regular expressions instead of glob wildcards.', 
+								control: { type: 'toggle', key: 'useRawRegex' } 
+							},
+							{ 
+								name: 'Sync dot-folders (Experimental)', 
+								desc: `Allow hidden directories (e.g. ${this.plugin.app.vault.configDir}) to sync. Warning: May cause platform layout/plugin setting collisions across devices.`, 
+								control: { type: 'toggle', key: 'syncDotFolders' } 
+							},
+							{ name: T.maxSizeName, desc: T.maxSizeDesc, control: { type: 'number', key: 'maxFileMb', min: 1, step: 1 } },
+							{ name: T.massDeleteName, desc: T.massDeleteDesc, control: { type: 'number', key: 'maxDeletePct', min: 1, max: 100, step: 1 } },
+							{ name: T.confirmPlanName, desc: T.confirmPlanDesc, control: { type: 'toggle', key: 'confirmPlan' } },
+							{ name: T.deviceName, desc: T.deviceDesc, control: { type: 'text', key: 'deviceName', placeholder: p.defaultDeviceName() } },
+						],
+					},
 					{
 						type: 'group',
 						heading: T.hCrypt,
@@ -199,19 +199,34 @@ async setControlValue(key: string, value: unknown): Promise<void> {
 					},
 					// AI CODE backup feature
 					{
-                        type: 'group',
-                        heading: T.hBackup,
-                        items: [
-                            { name: T.backupEnabledName, desc: T.backupEnabledDesc, control: { type: 'toggle', key: 'backupEnabled' } },
-                            { name: T.maxBackupsName, desc: T.maxBackupsDesc, control: { type: 'number', key: 'maxBackups', min: 1, max: 10, step: 1 } },
-                            { name: T.keepLocalName, desc: T.keepLocalDesc, control: { type: 'toggle', key: 'backupKeepLocal' } },
-                            { name: T.localFolderDesc, desc: T.localFolderDesc, control: { type: 'text', key: 'localBackupFolder', validate: notEmpty } },
-                        ],
-                    },
+						type: 'group',
+						heading: T.hBackup,
+						items: [
+							{ name: T.backupEnabledName, desc: T.backupEnabledDesc, control: { type: 'toggle', key: 'backupEnabled' } },
+							{ name: T.maxBackupsName, desc: T.maxBackupsDesc, control: { type: 'number', key: 'maxBackups', min: 0, max: 10, step: 1 } },
+							{ name: T.keepLocalName, desc: T.keepLocalDesc, control: { type: 'toggle', key: 'backupKeepLocal' } },
+							{ name: T.localFolderDesc, desc: T.localFolderDesc, control: { type: 'text', key: 'localBackupFolder', validate: notEmpty } },
+						],
+					},
 					{
 						type: 'group',
 						heading: T.hMaintenance,
 						items: [
+							{ 
+								name: 'Export setup configuration (QR Code)', 
+								desc: 'Display a QR code on screen to quickly scan and pair this vault configuration with iOS or Android.', 
+								action: () => p.showQrExportModal() 
+							},
+							{ 
+								name: T.exportName, 
+								desc: T.exportDesc, 
+								action: () => void p.exportConfigToClipboard() 
+							},
+							{ 
+								name: T.importName, 
+								desc: T.importDesc, 
+								action: () => void p.promptImportConfig() 
+							},
 							{ name: T.resetName, desc: T.resetDesc, action: () => void p.resetState(true) },
 							{ name: T.forgetName, desc: T.forgetDesc, action: () => void p.forgetDevice(() => this.update()) },
 						],

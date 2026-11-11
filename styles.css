@@ -50,26 +50,88 @@
 	margin-bottom: var(--size-4-2);
 }
 
-/* ==========================================================================
-   Mobile & iOS Modal Viewport / Keyboard Fixes
-   ========================================================================== */
-
-.modal.cds-wizard-modal {
-    max-height: 85dvh;
+/* Modal Viewport & Container Sizing */
+.modal-container .modal.cds-wizard-modal {
+	max-height: 85dvh;
 	display: flex;
 	flex-direction: column;
 }
 
-.modal.cds-wizard-modal .modal-content {
+.modal-container .modal.cds-wizard-modal .modal-content {
 	overflow-y: auto;
 	-webkit-overflow-scrolling: touch;
-	padding-bottom: 160px; /* Extra bottom clearance for virtual keyboard */
 }
 
-/* Ensure native touch selection & paste context menu on mobile webviews */
+/* Mobile & iOS virtual keyboard clearance (Mobile only) */
+.is-mobile .modal-container .modal.cds-wizard-modal .modal-content {
+	padding-bottom: 160px;
+}
+
+/* Touch text selection on mobile webviews */
 .modal-container .cds-wizard-modal input[type="text"],
 .modal-container .cds-wizard-modal input[type="password"],
 .modal-container .cds-wizard-modal textarea {
 	-webkit-user-select: text;
 	user-select: text;
+}
+
+/* Remote Backup Explorer UI */
+.cds-backup-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	margin-bottom: var(--size-4-2);
+}
+
+.cds-backup-count {
+	font-weight: var(--font-bold);
+	color: var(--text-muted);
+}
+
+.cds-backup-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+	max-height: 60dvh;
+	overflow-y: auto;
+}
+
+.cds-backup-item {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	padding: var(--size-4-2);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	background: var(--background-secondary);
+}
+
+.cds-backup-meta {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	margin-top: var(--size-2-1);
+}
+
+.cds-backup-actions {
+	display: flex;
+	gap: var(--size-2-2);
+	align-items: center;
+}
+
+.cds-backup-actions button {
+	margin: 0;
+}
+
+.cds-wizard-import {
+	margin-top: 15px;
+}
+
+.cds-qr-container {
+	text-align: center;
+	margin: 20px 0;
+}
+
+.cds-qr-image {
+	border-radius: 8px;
+	border: 1px solid var(--background-modifier-border);
 }
