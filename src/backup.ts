@@ -1,4 +1,4 @@
-import { App, ButtonComponent, Modal, Notice, Setting, TFile, TFolder, normalizePath } from 'obsidian';
+import { App, ButtonComponent, Modal, Notice, Setting, TFolder, normalizePath } from 'obsidian';
 import { unzipSync, zipSync } from 'fflate';
 import type CryptDriveSync from './main';
 import { PathSanitizer } from './sanitizer';
@@ -226,7 +226,6 @@ export class BackupManager {
 			const adapter = app.vault.adapter;
 			const localBackupFolder = PathSanitizer.sanitizeLocalBackupFolder(this.plugin.settings.localBackupFolder);
 
-			const now = Date.now();
 
 			// Fetch remote vault files map to construct exact 3-way sync baseline state
 			const remoteVault = await this.plugin.remote(false, 'vaults');
@@ -294,7 +293,7 @@ export class BackupManager {
 				}
 			}
 
-			// 4. Extract and replace/create files in vault with fresh modified timestamp
+			// 4. Extract and replace/create files in vault and align baseline mtime/md5
 			const newBase = new Map<string, BaseEntry>();
 
 			for (const [relativePath, content] of Object.entries(unzipped)) {
@@ -315,25 +314,17 @@ export class BackupManager {
 				}
 
 				const buffer = toArrayBuffer(content);
-				const existing = app.vault.getAbstractFileByPath(cleanPath);
+				await adapter.writeBinary(cleanPath, buffer);
 
-				if (existing instanceof TFile) {
-					await app.vault.modifyBinary(existing, buffer, { mtime: now });
-				} else {
-					try {
-						await app.vault.createBinary(cleanPath, buffer, { mtime: now });
-					} catch {
-						await adapter.writeBinary(cleanPath, buffer, { mtime: now });
-					}
+				const stat = await adapter.stat(cleanPath);
+				if (stat) {
+					const rEntry = remoteFiles.get(cleanPath);
+					newBase.set(cleanPath, {
+						mtime: stat.mtime,
+						size: stat.size,
+						md5: rEntry?.md5 ?? '',
+					});
 				}
-
-				// Seed baseline entry matching remote md5 & mtime (or default) so plan() evaluates local (now) > base as UPLOAD
-				const rEntry = remoteFiles.get(cleanPath);
-				newBase.set(cleanPath, {
-					mtime: rEntry ? rEntry.mtime : 1,
-					size: rEntry ? rEntry.size : buffer.byteLength,
-					md5: rEntry?.md5 ?? '',
-				});
 			}
 
 			// 5. Seed baseline entries for trashed files matching remote info so plan() evaluates local (deleted) vs remote as TRASH_REMOTE
@@ -517,10 +508,12 @@ export class RemoteBackupsModal extends Modal {
 						const isPreRestore = item.decryptedName.startsWith('backup_prerestore_');
 						
 						try {
-							if (!isPreRestore) {
+							if (!isPreRestore && this.plugin.settings.createPreRestoreSnapshot) {
 								const snapshotNotice = new Notice('Creating pre-restore safety snapshot...', 0);
 								await this.manager.createPreRestoreSnapshot();
 								snapshotNotice.hide();
+							} else if (!isPreRestore && !this.plugin.settings.createPreRestoreSnapshot) {
+								this.plugin.log('Pre-restore safety snapshot disabled in settings: skipping snapshot creation.');
 							} else {
 								this.plugin.log('Restoring from pre-restore snapshot: skipping secondary safety snapshot creation.');
 							}

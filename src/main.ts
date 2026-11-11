@@ -131,6 +131,7 @@ export default class CryptDriveSync extends Plugin {
 				localBackupFolder: this.settings.localBackupFolder,
 				syncDotFolders: this.settings.syncDotFolders,
 				useRawRegex: this.settings.useRawRegex,
+				createPreRestoreSnapshot: this.settings.createPreRestoreSnapshot,
 				wizardDone: true,
 			},
 			secrets: {

@@ -52,6 +52,8 @@ const en = {
 	keepLocalName: 'Keep local copy',
 	keepLocalDesc: 'Save an unencrypted ZIP copy of the backup inside your vault folder.',
 	localFolderDesc: 'Folder path inside vault for local backup storage.',
+    preRestoreSnapshotName: 'Create pre-restore snapshot',
+    preRestoreSnapshotDesc: 'Automatically create a safety backup snapshot on Google Drive before restoring from a backup archive.',
 
 	// probe / check
 	probeNeedSetup: 'Sign in to Google and set the password first.',
@@ -294,6 +296,8 @@ const ru: Dict = {
 	keepLocalName: 'Сохранять локальную копию',
 	keepLocalDesc: 'Сохранять незашифрованную ZIP-копию бэкапа внутри папки хранилища.',
 	localFolderDesc: 'Путь к папке внутри хранилища для локальных бэкапов.',
+    preRestoreSnapshotName: 'Create pre-restore snapshot',
+    preRestoreSnapshotDesc: 'Automatically create a safety backup snapshot on Google Drive before restoring from a backup archive.',
 
 	probeNeedSetup: 'Сначала войдите в Google и задайте пароль.',
 	probeOkFiles: (n) => `✓ Пароль подходит: в облаке файлов этого хранилища — ${n}.`,

@@ -26,6 +26,7 @@ export interface Settings {
 	localBackupFolder: string;
 	syncDotFolders: boolean;
 	useRawRegex: boolean;
+	createPreRestoreSnapshot: boolean;
 }
 
 // Defaults: a dedicated root folder, no password2, encrypted folder names (rclone crypt defaults).
@@ -52,6 +53,7 @@ export const DEFAULTS: Settings = {
 	localBackupFolder: 'backups',
 	syncDotFolders: false,
 	useRawRegex: false,
+	createPreRestoreSnapshot: true,
 };
 
 // Changing any of these points the plugin at a different remote → forget sync state.
@@ -203,6 +205,7 @@ async setControlValue(key: string, value: unknown): Promise<void> {
 						heading: T.hBackup,
 						items: [
 							{ name: T.backupEnabledName, desc: T.backupEnabledDesc, control: { type: 'toggle', key: 'backupEnabled' } },
+							{ name: T.preRestoreSnapshotName, desc: T.preRestoreSnapshotDesc, control: { type: 'toggle', key: 'createPreRestoreSnapshot' } },
 							{ name: T.maxBackupsName, desc: T.maxBackupsDesc, control: { type: 'number', key: 'maxBackups', min: 0, max: 10, step: 1 } },
 							{ name: T.keepLocalName, desc: T.keepLocalDesc, control: { type: 'toggle', key: 'backupKeepLocal' } },
 							{ name: T.localFolderDesc, desc: T.localFolderDesc, control: { type: 'text', key: 'localBackupFolder', validate: notEmpty } },
