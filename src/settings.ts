@@ -68,6 +68,9 @@ export class CryptDriveSyncSettingTab extends PluginSettingTab {
 		super(plugin.app, plugin);
 		this.plugin = plugin;
 		this.icon = 'refresh-cw';
+		this.plugin.onConfigImported = () => {
+			if (this.containerEl.isConnected) this.update();
+		};
 	}
 // AI CODE backup feature
 async setControlValue(key: string, value: unknown): Promise<void> {
@@ -237,10 +240,10 @@ async setControlValue(key: string, value: unknown): Promise<void> {
 								desc: T.exportDesc, 
 								action: () => void p.exportConfigToClipboard() 
 							},
-							{ 
-								name: T.importName, 
-								desc: T.importDesc, 
-								action: () => void p.promptImportConfig() 
+							{
+								name: T.importName,
+								desc: T.importDesc,
+								action: () => void p.promptImportConfig(() => this.update()),
 							},
 							{ name: T.resetName, desc: T.resetDesc, action: () => void p.resetState(true) },
 							{ name: T.forgetName, desc: T.forgetDesc, action: () => void p.forgetDevice(() => this.update()) },
