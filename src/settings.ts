@@ -10,6 +10,7 @@ export interface Settings {
 	rootPath: string;
 	folder: string;
 	trashDir: string;
+	trashRetentionDays: number; // 0 = keep indefinitely, >0 = auto-prune days
 	syncOnStart: boolean;
 	intervalMin: number;
 	afterEditSec: number;
@@ -21,11 +22,12 @@ export interface Settings {
 	wizardDone: boolean;
 	// AI CODE backup feature
 	backupEnabled: boolean;
-    maxBackups: number;
-    backupKeepLocal: boolean;
-    localBackupFolder: string;
+	maxBackups: number;
+	backupKeepLocal: boolean;
+	localBackupFolder: string;
 	syncDotFolders: boolean;
 	useRawRegex: boolean;
+	createPreRestoreSnapshot: boolean;
 }
 
 // Defaults: a dedicated root folder, no password2, encrypted folder names (rclone crypt defaults).
@@ -36,6 +38,7 @@ export const DEFAULTS: Settings = {
 	rootPath: 'crypt-drive-sync',
 	folder: '', // empty → the vault's name (set on load)
 	trashDir: '_deleted',
+	trashRetentionDays: 30,
 	syncOnStart: true,
 	intervalMin: 10,
 	afterEditSec: 30,
@@ -47,11 +50,12 @@ export const DEFAULTS: Settings = {
 	wizardDone: false,
 	// AI CODE backup feature
 	backupEnabled: true,
-    maxBackups: 5,
-    backupKeepLocal: false,
-    localBackupFolder: 'backups',
+	maxBackups: 5,
+	backupKeepLocal: false,
+	localBackupFolder: 'backups',
 	syncDotFolders: false,
 	useRawRegex: false,
+	createPreRestoreSnapshot: true,
 };
 
 // Changing any of these points the plugin at a different remote → forget sync state.
@@ -64,6 +68,9 @@ export class CryptDriveSyncSettingTab extends PluginSettingTab {
 		super(plugin.app, plugin);
 		this.plugin = plugin;
 		this.icon = 'refresh-cw';
+		this.plugin.onConfigImported = () => {
+			if (this.containerEl.isConnected) this.update();
+		};
 	}
 // AI CODE backup feature
 async setControlValue(key: string, value: unknown): Promise<void> {
@@ -162,30 +169,30 @@ async setControlValue(key: string, value: unknown): Promise<void> {
 				name: T.advancedName,
 				desc: T.advancedDesc,
 				items: [
-{
-	type: 'group',
-	heading: T.hSync,
-	items: [
-		{ name: T.onStartName, desc: T.onStartDesc, control: { type: 'toggle', key: 'syncOnStart' } },
-		{ name: T.intervalName, desc: T.intervalDesc, control: { type: 'number', key: 'intervalMin', min: 0, step: 1 } },
-		{ name: T.afterEditName, desc: T.afterEditDesc, control: { type: 'number', key: 'afterEditSec', min: 0, step: 1 } },
-		{ name: T.excludeName, desc: T.excludeDesc, control: { type: 'textarea', key: 'exclude', rows: 4, placeholder: 'Private/**\n**/*.mp4' } },
-		{ 
-			name: 'Use raw Regex for exclusion', 
-			desc: 'Interpret exclude patterns as raw JavaScript regular expressions instead of glob wildcards.', 
-			control: { type: 'toggle', key: 'useRawRegex' } 
-		},
-		{ 
-			name: 'Sync dot-folders (Experimental)', 
-			desc: `Allow hidden directories (e.g. ${this.plugin.app.vault.configDir}) to sync. Warning: May cause platform layout/plugin setting collisions across devices.`, 
-			control: { type: 'toggle', key: 'syncDotFolders' } 
-		},
-		{ name: T.maxSizeName, desc: T.maxSizeDesc, control: { type: 'number', key: 'maxFileMb', min: 1, step: 1 } },
-		{ name: T.massDeleteName, desc: T.massDeleteDesc, control: { type: 'number', key: 'maxDeletePct', min: 1, max: 100, step: 1 } },
-		{ name: T.confirmPlanName, desc: T.confirmPlanDesc, control: { type: 'toggle', key: 'confirmPlan' } },
-		{ name: T.deviceName, desc: T.deviceDesc, control: { type: 'text', key: 'deviceName', placeholder: p.defaultDeviceName() } },
-	],
-},
+					{
+						type: 'group',
+						heading: T.hSync,
+						items: [
+							{ name: T.onStartName, desc: T.onStartDesc, control: { type: 'toggle', key: 'syncOnStart' } },
+							{ name: T.intervalName, desc: T.intervalDesc, control: { type: 'number', key: 'intervalMin', min: 0, step: 1 } },
+							{ name: T.afterEditName, desc: T.afterEditDesc, control: { type: 'number', key: 'afterEditSec', min: 0, step: 1 } },
+							{ name: T.excludeName, desc: T.excludeDesc, control: { type: 'textarea', key: 'exclude', rows: 4, placeholder: 'Private/**\n**/*.mp4' } },
+							{ 
+								name: 'Use raw Regex for exclusion', 
+								desc: 'Interpret exclude patterns as raw JavaScript regular expressions instead of glob wildcards.', 
+								control: { type: 'toggle', key: 'useRawRegex' } 
+							},
+							{ 
+								name: 'Sync dot-folders (Experimental)', 
+								desc: `Allow hidden directories (e.g. ${this.plugin.app.vault.configDir}) to sync. Warning: May cause platform layout/plugin setting collisions across devices.`, 
+								control: { type: 'toggle', key: 'syncDotFolders' } 
+							},
+							{ name: T.maxSizeName, desc: T.maxSizeDesc, control: { type: 'number', key: 'maxFileMb', min: 1, step: 1 } },
+							{ name: T.massDeleteName, desc: T.massDeleteDesc, control: { type: 'number', key: 'maxDeletePct', min: 1, max: 100, step: 1 } },
+							{ name: T.confirmPlanName, desc: T.confirmPlanDesc, control: { type: 'toggle', key: 'confirmPlan' } },
+							{ name: T.deviceName, desc: T.deviceDesc, control: { type: 'text', key: 'deviceName', placeholder: p.defaultDeviceName() } },
+						],
+					},
 					{
 						type: 'group',
 						heading: T.hCrypt,
@@ -199,19 +206,45 @@ async setControlValue(key: string, value: unknown): Promise<void> {
 					},
 					// AI CODE backup feature
 					{
-                        type: 'group',
-                        heading: T.hBackup,
-                        items: [
-                            { name: T.backupEnabledName, desc: T.backupEnabledDesc, control: { type: 'toggle', key: 'backupEnabled' } },
-                            { name: T.maxBackupsName, desc: T.maxBackupsDesc, control: { type: 'number', key: 'maxBackups', min: 1, max: 10, step: 1 } },
-                            { name: T.keepLocalName, desc: T.keepLocalDesc, control: { type: 'toggle', key: 'backupKeepLocal' } },
-                            { name: T.localFolderDesc, desc: T.localFolderDesc, control: { type: 'text', key: 'localBackupFolder', validate: notEmpty } },
-                        ],
-                    },
+						type: 'group',
+						heading: T.hBackup,
+						items: [
+							{ name: T.backupEnabledName, desc: T.backupEnabledDesc, control: { type: 'toggle', key: 'backupEnabled' } },
+							{ name: T.preRestoreSnapshotName, desc: T.preRestoreSnapshotDesc, control: { type: 'toggle', key: 'createPreRestoreSnapshot' } },
+							{ name: T.maxBackupsName, desc: T.maxBackupsDesc, control: { type: 'number', key: 'maxBackups', min: 0, max: 10, step: 1 } },
+							{ name: T.keepLocalName, desc: T.keepLocalDesc, control: { type: 'toggle', key: 'backupKeepLocal' } },
+							{ name: T.localFolderDesc, desc: T.localFolderDesc, control: { type: 'text', key: 'localBackupFolder', validate: notEmpty } },
+						],
+					},
 					{
 						type: 'group',
 						heading: T.hMaintenance,
 						items: [
+							{
+    name: T.trashRetentionName,
+    desc: T.trashRetentionDesc,
+    control: { type: 'number', key: 'trashRetentionDays', min: 0, step: 1 },
+},
+{
+    name: T.emptyTrashName,
+    desc: T.emptyTrashDesc,
+    action: () => void p.emptyTrash(),
+},
+							{ 
+								name: T.exportNameQr, 
+								desc: T.exportDescQr, 
+								action: () => p.showQrExportModal() 
+							},
+							{ 
+								name: T.exportName, 
+								desc: T.exportDesc, 
+								action: () => void p.exportConfigToClipboard() 
+							},
+							{
+								name: T.importName,
+								desc: T.importDesc,
+								action: () => void p.promptImportConfig(() => this.update()),
+							},
 							{ name: T.resetName, desc: T.resetDesc, action: () => void p.resetState(true) },
 							{ name: T.forgetName, desc: T.forgetDesc, action: () => void p.forgetDevice(() => this.update()) },
 						],

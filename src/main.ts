@@ -1,17 +1,17 @@
 import { Modal, Notice, Platform, Plugin, Setting, TFile, getLanguage, normalizePath, requestUrl, setIcon, setTooltip } from 'obsidian';
 import type { App } from 'obsidian';
-import { Crypt } from './crypt.ts';
-import { CryptDriveFs, DriveClient, GoogleAuth, RootMissingError, parseRefreshToken, pollDeviceLogin, startDeviceLogin } from './drive.ts';
-import type { CachedRemoteFile, Request } from './drive.ts';
-import { T, setLanguage } from './i18n.ts';
-import { CryptDriveSyncSettingTab, DEFAULTS } from './settings.ts';
-import type { Settings } from './settings.ts';
-import { apply, plan } from './sync.ts';
-import type { Action, Plan } from './sync.ts';
-import type { BaseEntry, LocalEntry, LocalFs, RemoteEntry } from './types.ts';
-import { SetupWizard } from './wizard.ts';
-import { BackupManager } from './backup.ts';
-import { PathSanitizer } from './sanitizer.ts';
+import { Crypt } from './crypt';
+import { CryptDriveFs, DriveClient, GoogleAuth, RootMissingError, parseRefreshToken, pollDeviceLogin, startDeviceLogin } from './drive';
+import type { CachedRemoteFile, Request } from './drive';
+import { T, setLanguage } from './i18n';
+import { CryptDriveSyncSettingTab, DEFAULTS } from './settings';
+import type { Settings } from './settings';
+import { apply, plan } from './sync';
+import type { Action, Plan } from './sync';
+import type { BaseEntry, LocalEntry, LocalFs, RemoteEntry } from './types';
+import { SetupWizard } from './wizard';
+import { BackupManager, RemoteBackupsModal } from './backup';
+import { PathSanitizer } from './sanitizer';
 
 const TOKEN_ID = 'token';
 export const PASSWORD_ID = 'password';
@@ -22,6 +22,403 @@ declare const GOOGLE_CLIENT: { id: string; secret: string };
 
 const MIN_DELETE_COUNT = 10;
 const req = requestUrl as unknown as Request;
+
+interface PayloadData {
+	v?: number;
+	s?: {
+		ci?: string;
+		r?: string;
+		f?: string;
+		e?: boolean;
+		t?: string;
+	};
+	sec?: {
+		p?: string;
+		s?: string;
+		cs?: string;
+		tk?: string;
+	};
+	settings?: Partial<Settings>;
+	secrets?: {
+		password?: string;
+		salt?: string;
+		clientSecret?: string;
+		token?: string;
+	};
+}
+
+function encodePayloadBase64Url(rawJson: string): string {
+	const bytes = new TextEncoder().encode(rawJson);
+	let binary = '';
+	for (let i = 0; i < bytes.length; i++) {
+		binary += String.fromCharCode(bytes[i]!);
+	}
+	return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function decodePayloadBase64Url(encoded: string): string {
+	const normalized = encoded.replace(/-/g, '+').replace(/_/g, '/');
+	const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+	const binary = atob(padded);
+	const bytes = new Uint8Array(binary.length);
+	for (let i = 0; i < binary.length; i++) {
+		bytes[i] = binary.charCodeAt(i);
+	}
+	return new TextDecoder().decode(bytes);
+}
+
+// Self-contained ISO/IEC 18004 Byte-Mode QR encoder (Versions 1..20, EC Level L) — 100% offline.
+const QR_VERSION_EC_L: ReadonlyArray<readonly [number, number, number, number, number] | null> = [
+	null,
+	[26, 1, 19, 0, 0],
+	[44, 1, 34, 0, 0],
+	[70, 1, 55, 0, 0],
+	[100, 1, 80, 0, 0],
+	[134, 1, 108, 0, 0],
+	[172, 2, 68, 0, 0],
+	[196, 2, 78, 0, 0],
+	[242, 2, 97, 0, 0],
+	[292, 2, 116, 0, 0],
+	[346, 2, 68, 2, 69],
+	[404, 4, 81, 0, 0],
+	[466, 2, 92, 2, 93],
+	[532, 4, 107, 0, 0],
+	[581, 3, 115, 1, 116],
+	[655, 5, 87, 1, 88],
+	[733, 5, 98, 1, 99],
+	[815, 1, 107, 5, 108],
+	[901, 5, 120, 1, 121],
+	[991, 3, 113, 4, 114],
+	[1085, 3, 107, 5, 108],
+];
+
+const QR_ALIGNMENT: ReadonlyArray<readonly number[]> = [
+	[],
+	[],
+	[6, 18],
+	[6, 22],
+	[6, 26],
+	[6, 30],
+	[6, 34],
+	[6, 22, 38],
+	[6, 24, 42],
+	[6, 26, 46],
+	[6, 28, 50],
+	[6, 30, 54],
+	[6, 32, 58],
+	[6, 34, 62],
+	[6, 26, 46, 66],
+	[6, 26, 48, 70],
+	[6, 26, 50, 74],
+	[6, 30, 54, 78],
+	[6, 30, 56, 82],
+	[6, 30, 58, 86],
+	[6, 34, 62, 90],
+];
+
+function gfMul(x: number, y: number): number {
+	let r = 0;
+	let a = x;
+	let b = y;
+	while (b > 0) {
+		if (b & 1) r ^= a;
+		b >>= 1;
+		a <<= 1;
+		if (a & 0x100) a ^= 0x11d;
+	}
+	return r;
+}
+
+function rsDivisor(degree: number): number[] {
+	let result = [1];
+	for (let i = 0; i < degree; i++) {
+		const next = new Array<number>(result.length + 1).fill(0);
+		let root = 1;
+		for (let k = 0; k < i; k++) root = gfMul(root, 2);
+		for (let j = 0; j < result.length; j++) {
+			const coeff = result[j]!;
+			next[j] = next[j]! ^ coeff;
+			next[j + 1] = next[j + 1]! ^ gfMul(coeff, root);
+		}
+		result = next;
+	}
+	return result;
+}
+
+function rsRemainder(data: number[], divisor: number[]): number[] {
+	const rem = new Array<number>(divisor.length - 1).fill(0);
+	for (const b of data) {
+		const factor = b ^ rem[0]!;
+		rem.shift();
+		rem.push(0);
+		for (let i = 0; i < rem.length; i++) {
+			rem[i] = rem[i]! ^ gfMul(divisor[i + 1]!, factor);
+		}
+	}
+	return rem;
+}
+
+function buildQrMatrix(text: string): boolean[][] {
+	const raw = new TextEncoder().encode(text);
+	let version = 0;
+	for (let v = 1; v <= 20; v++) {
+		const spec = QR_VERSION_EC_L[v]!;
+		const totalDataCw = spec[1] * spec[2] + spec[3] * spec[4];
+		const ccBits = v <= 9 ? 8 : 16;
+		if (4 + ccBits + 8 * raw.length <= totalDataCw * 8) {
+			version = v;
+			break;
+		}
+	}
+	if (!version) throw new Error('Configuration payload is too large for QR code.');
+
+	const [tot, b1, d1, b2, d2] = QR_VERSION_EC_L[version]!;
+	const totalDataCw = b1 * d1 + b2 * d2;
+	const ecCwPerBlock = Math.floor((tot - totalDataCw) / (b1 + b2));
+
+	const bits: number[] = [];
+	const pushBits = (val: number, len: number) => {
+		for (let i = len - 1; i >= 0; i--) bits.push((val >> i) & 1);
+	};
+
+	pushBits(0b0100, 4);
+	pushBits(raw.length, version <= 9 ? 8 : 16);
+	for (let i = 0; i < raw.length; i++) pushBits(raw[i]!, 8);
+	pushBits(0, Math.min(4, totalDataCw * 8 - bits.length));
+	while (bits.length % 8 !== 0) bits.push(0);
+
+	const dataCw: number[] = [];
+	for (let i = 0; i < bits.length; i += 8) {
+		let val = 0;
+		for (let j = 0; j < 8; j++) val = (val << 1) | bits[i + j]!;
+		dataCw.push(val);
+	}
+	const padBytes = [0xec, 0x11];
+	let padIdx = 0;
+	while (dataCw.length < totalDataCw) {
+		dataCw.push(padBytes[padIdx % 2]!);
+		padIdx++;
+	}
+
+	const blocks: number[][] = [];
+	const ecBlocks: number[][] = [];
+	const div = rsDivisor(ecCwPerBlock);
+	let offset = 0;
+	for (let i = 0; i < b1 + b2; i++) {
+		const blkLen = i < b1 ? d1 : d2;
+		const blk = dataCw.slice(offset, offset + blkLen);
+		offset += blkLen;
+		blocks.push(blk);
+		ecBlocks.push(rsRemainder(blk, div));
+	}
+
+	const finalCw: number[] = [];
+	const maxD = Math.max(d1, d2);
+	for (let i = 0; i < maxD; i++) {
+		for (const blk of blocks) {
+			if (i < blk.length) finalCw.push(blk[i]!);
+		}
+	}
+	for (let i = 0; i < ecCwPerBlock; i++) {
+		for (const eblk of ecBlocks) finalCw.push(eblk[i]!);
+	}
+
+	const size = version * 4 + 17;
+	const modules = Array.from({ length: size }, () => new Array<boolean>(size).fill(false));
+	const isFunc = Array.from({ length: size }, () => new Array<boolean>(size).fill(false));
+
+	const setFunc = (r: number, c: number, dark: boolean) => {
+		if (r >= 0 && r < size && c >= 0 && c < size) {
+			modules[r]![c] = dark;
+			isFunc[r]![c] = true;
+		}
+	};
+
+	const drawFinder = (row: number, col: number) => {
+		for (let dr = -1; dr <= 7; dr++) {
+			for (let dc = -1; dc <= 7; dc++) {
+				const r = row + dr;
+				const c = col + dc;
+				if (r >= 0 && r < size && c >= 0 && c < size) {
+					const dark =
+						dr >= 0 &&
+						dr <= 6 &&
+						dc >= 0 &&
+						dc <= 6 &&
+						(dr === 0 || dr === 6 || dc === 0 || dc === 6 || (dr >= 2 && dr <= 4 && dc >= 2 && dc <= 4));
+					setFunc(r, c, dark);
+				}
+			}
+		}
+	};
+
+	drawFinder(0, 0);
+	drawFinder(0, size - 7);
+	drawFinder(size - 7, 0);
+
+	const align = QR_ALIGNMENT[version]!;
+	for (const r of align) {
+		for (const c of align) {
+			if ((r === 6 && c === 6) || (r === 6 && c === size - 7) || (r === size - 7 && c === 6)) continue;
+			for (let dr = -2; dr <= 2; dr++) {
+				for (let dc = -2; dc <= 2; dc++) {
+					setFunc(r + dr, c + dc, Math.abs(dr) === 2 || Math.abs(dc) === 2 || (dr === 0 && dc === 0));
+				}
+			}
+		}
+	}
+
+	for (let i = 8; i < size - 8; i++) {
+		setFunc(6, i, i % 2 === 0);
+		setFunc(i, 6, i % 2 === 0);
+	}
+
+	setFunc(size - 8, 8, true);
+	for (let i = 0; i < 9; i++) {
+		if (i !== 6) {
+			setFunc(8, i, false);
+			setFunc(i, 8, false);
+		}
+	}
+	for (let i = 0; i < 8; i++) {
+		setFunc(8, size - 1 - i, false);
+		if (i < 7) setFunc(size - 1 - i, 8, false);
+	}
+
+	if (version >= 7) {
+		for (let i = 0; i < 6; i++) {
+			for (let j = 0; j < 3; j++) {
+				setFunc(size - 11 + j, i, false);
+				setFunc(i, size - 11 + j, false);
+			}
+		}
+	}
+
+	const allBits: number[] = [];
+	for (const cw of finalCw) {
+		for (let i = 7; i >= 0; i--) allBits.push((cw >> i) & 1);
+	}
+
+	let bitIdx = 0;
+	let upward = true;
+	let col = size - 1;
+	while (col > 0) {
+		if (col === 6) col--;
+		for (let i = 0; i < size; i++) {
+			const row = upward ? size - 1 - i : i;
+			for (const dc of [0, -1]) {
+				const c = col + dc;
+				if (!isFunc[row]![c]) {
+					modules[row]![c] = bitIdx < allBits.length ? Boolean(allBits[bitIdx++]) : false;
+				}
+			}
+		}
+		upward = !upward;
+		col -= 2;
+	}
+
+	for (let r = 0; r < size; r++) {
+		for (let c = 0; c < size; c++) {
+			if (!isFunc[r]![c] && (r + c) % 2 === 0) {
+				modules[r]![c] = !modules[r]![c];
+			}
+		}
+	}
+
+	// Format bits for EC Level L (01) and Mask 0 (000) -> 0x77c4
+	const fmt = 0x77c4;
+	for (let i = 0; i < 6; i++) setFunc(8, i, Boolean((fmt >> (14 - i)) & 1));
+	setFunc(8, 7, Boolean((fmt >> 8) & 1));
+	setFunc(8, 8, Boolean((fmt >> 7) & 1));
+	setFunc(7, 8, Boolean((fmt >> 6) & 1));
+	for (let i = 9; i < 15; i++) setFunc(14 - i, 8, Boolean((fmt >> (14 - i)) & 1));
+
+	for (let i = 0; i < 7; i++) setFunc(size - 1 - i, 8, Boolean((fmt >> (14 - i)) & 1));
+	for (let i = 0; i < 8; i++) setFunc(8, size - 8 + i, Boolean((fmt >> (7 - i)) & 1));
+
+	if (version >= 7) {
+		let rem = version;
+		for (let i = 0; i < 12; i++) rem = (rem << 1) ^ (((rem >> 11) & 1) * 0x1f25);
+		const vbits = (version << 12) | rem;
+		for (let i = 0; i < 18; i++) {
+			const bit = Boolean((vbits >> i) & 1);
+			const a = size - 11 + (i % 3);
+			const b = Math.floor(i / 3);
+			setFunc(a, b, bit);
+			setFunc(b, a, bit);
+		}
+	}
+
+	return modules;
+}
+
+export class QrCodeExportModal extends Modal {
+	private payload: string;
+
+	constructor(app: App, payload: string) {
+		super(app);
+		this.payload = payload;
+		this.setTitle('Scan qr code to transfer setup');
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.createEl('p', {
+			text: 'Scan this qr code with your iOS or Android camera and tap "open in Obsidian" to copy and load your setup safely without opening a browser.',
+			cls: 'cds-backup-meta',
+		});
+
+		const container = contentEl.createDiv({ cls: 'cds-qr-container' });
+		const transferUri = `obsidian://crypt-drive-sync-import?payload=${encodePayloadBase64Url(this.payload)}`;
+
+		try {
+			const matrix = buildQrMatrix(transferUri);
+			const scale = 4;
+			const quietZone = 4;
+			const canvasSize = (matrix.length + quietZone * 2) * scale;
+
+			const canvas = container.createEl('canvas', { cls: 'cds-qr-image' });
+			canvas.width = canvasSize;
+			canvas.height = canvasSize;
+
+			const ctx = canvas.getContext('2d');
+			if (ctx) {
+				ctx.fillStyle = '#ffffff';
+				ctx.fillRect(0, 0, canvasSize, canvasSize);
+				ctx.fillStyle = '#000000';
+				for (let r = 0; r < matrix.length; r++) {
+					const row = matrix[r]!;
+					for (let c = 0; c < row.length; c++) {
+						if (row[c]) {
+							ctx.fillRect((c + quietZone) * scale, (r + quietZone) * scale, scale, scale);
+						}
+					}
+				}
+			}
+		} catch (e) {
+			container.createEl('p', {
+				text: `Could not render QR code (${String(e)}). Use "Copy raw payload string" below instead.`,
+				cls: 'mod-warning',
+			});
+		}
+
+		new Setting(contentEl)
+			.addButton((btn) =>
+				btn
+					.setButtonText('Copy raw payload string')
+					.onClick(async () => {
+						await navigator.clipboard.writeText(this.payload);
+						new Notice('Qr payload string copied to clipboard!');
+					}),
+			)
+			.addButton((btn) => btn.setButtonText('Close').onClick(() => this.close()));
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
 
 export default class CryptDriveSync extends Plugin {
 	settings: Settings = { ...DEFAULTS };
@@ -39,12 +436,254 @@ export default class CryptDriveSync extends Plugin {
 	private editedDuringSync = false;
 	private createRoot = false;
 
-	backupManager = new BackupManager(this);
+	backupManager!: BackupManager;
+	onConfigImported?: () => void;
+
+	async saveSettings(): Promise<void> {
+		await this.saveData(this.settings);
+	}
+
+	async promptImportConfig(onDone?: () => void): Promise<void> {
+		new ImportConfigModal(this.app, async (rawJson) => {
+			await this.importCompactConfig(rawJson);
+			onDone?.();
+		}).open();
+	}
+
+	/** Permanently deletes both vault files and backups for this vault from remote _deleted across all date folders. */
+	async emptyTrash(): Promise<void> {
+		const notice = new Notice('Emptying remote trash folder...', 0);
+		try {
+			const remote = await this.remote(true, '_deleted');
+			if (!remote) {
+				notice.hide();
+				return;
+			}
+
+			const vaultName = PathSanitizer.sanitizeVaultName(this.settings.folder, this.app.vault.getName());
+			const vaultNotesSubpath = `vaults/${vaultName}/`;
+			const vaultBackupsSubpath = `_backups/${vaultName}/`;
+
+			const { files } = await remote.list();
+			let count = 0;
+
+			for (const [path] of files.entries()) {
+				// Match items in either vaults/[vault_name]/ or _backups/[vault_name]/
+				const isVaultItem = path.includes(vaultNotesSubpath) || path.includes(vaultBackupsSubpath);
+				if (!isVaultItem) continue;
+
+				try {
+					await remote.trash(path);
+					count++;
+				} catch (err) {
+					this.log(`\u26a0 Failed to remove ${path} from trash: ${String(err)}`);
+				}
+			}
+
+			await remote.cleanEmptyRemoteFolders();
+			const removedFolders = await remote.purgeEmptySubfoldersForSubpaths([
+				`vaults/${vaultName}`,
+				`_backups/${vaultName}`,
+			]);
+			const totalRemoved = count + removedFolders;
+
+			if (totalRemoved === 0) {
+				notice.hide();
+				new Notice(`Remote trash for vault "${vaultName}" is already empty.`);
+				return;
+			}
+
+			notice.hide();
+			new Notice(`Remote trash emptied (${totalRemoved} item(s) removed for vault "${vaultName}").`);
+			this.log(`Emptied remote trash for vault "${vaultName}" (${totalRemoved} item(s) deleted).`);
+		} catch (e) {
+			notice.hide();
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`Failed to empty trash: ${msg}`);
+			this.log(`\u26a0 Empty trash error: ${msg}`);
+		}
+	}
+
+	/** Automatically prunes expired vault files and backups in _deleted older than trashRetentionDays. */
+	async pruneTrash(): Promise<void> {
+		const retentionDays = Number(this.settings.trashRetentionDays || 0);
+		if (retentionDays <= 0) return;
+
+		const remote = await this.remote(false, '_deleted');
+		if (!remote) return;
+
+		const vaultName = PathSanitizer.sanitizeVaultName(this.settings.folder, this.app.vault.getName());
+		const vaultNotesSubpath = `vaults/${vaultName}/`;
+		const vaultBackupsSubpath = `_backups/${vaultName}/`;
+		const cutoffTime = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+
+		try {
+			const { files } = await remote.list();
+			let prunedCount = 0;
+
+			for (const [path, entry] of files.entries()) {
+				// Skip items belonging to other vaults
+				const isVaultItem = path.includes(vaultNotesSubpath) || path.includes(vaultBackupsSubpath);
+				if (!isVaultItem) continue;
+
+				// Extract date from YYYY-MM-DD prefix in path
+				const dateMatch = path.match(/^(\d{4}-\d{2}-\d{2})/);
+				let fileTimestamp = entry.mtime;
+
+				if (dateMatch && dateMatch[1]) {
+					const parsedDate = Date.parse(dateMatch[1]);
+					if (!isNaN(parsedDate)) {
+						fileTimestamp = parsedDate;
+					}
+				}
+
+				if (fileTimestamp && fileTimestamp < cutoffTime) {
+					try {
+						await remote.trash(path);
+						prunedCount++;
+						this.log(`Pruned expired trashed item for "${vaultName}" (${retentionDays}+ days old): ${path}`);
+					} catch (err) {
+						this.log(`\u26a0 Failed to prune trashed item ${path}: ${String(err)}`);
+					}
+				}
+			}
+
+			if (prunedCount > 0) {
+				await remote.cleanEmptyRemoteFolders();
+			}
+		} catch (e) {
+			this.log(`\u26a0 Trash prune check failed: ${String(e)}`);
+		}
+	}
+
+	exportConfigPayload(): string {
+		const payload = {
+			version: 1,
+			settings: {
+				clientId: this.settings.clientId,
+				rootPath: this.settings.rootPath,
+				folder: this.settings.folder,
+				dirNameEncrypt: this.settings.dirNameEncrypt,
+				trashDir: this.settings.trashDir,
+				syncOnStart: this.settings.syncOnStart,
+				intervalMin: this.settings.intervalMin,
+				afterEditSec: this.settings.afterEditSec,
+				exclude: this.settings.exclude,
+				maxFileMb: this.settings.maxFileMb,
+				maxDeletePct: this.settings.maxDeletePct,
+				backupEnabled: this.settings.backupEnabled,
+				maxBackups: this.settings.maxBackups,
+				localBackupFolder: this.settings.localBackupFolder,
+				syncDotFolders: this.settings.syncDotFolders,
+				useRawRegex: this.settings.useRawRegex,
+				createPreRestoreSnapshot: this.settings.createPreRestoreSnapshot,
+				wizardDone: true,
+			},
+			secrets: {
+				password: this.secret(PASSWORD_ID) || '',
+				salt: this.secret(SALT_ID) || '',
+				clientSecret: this.secret(CLIENT_SECRET_ID) || '',
+				token: this.secret(TOKEN_ID) || '',
+			},
+		};
+		return JSON.stringify(payload);
+	}
+
+	exportConfigPayloadCompact(): string {
+		const payload = {
+			v: 1,
+			s: {
+				ci: this.settings.clientId,
+				r: this.settings.rootPath,
+				f: this.settings.folder,
+				e: this.settings.dirNameEncrypt,
+				t: this.settings.trashDir,
+			},
+			sec: {
+				p: this.secret(PASSWORD_ID) || '',
+				s: this.secret(SALT_ID) || '',
+				cs: this.secret(CLIENT_SECRET_ID) || '',
+				tk: this.secret(TOKEN_ID) || '',
+			},
+		};
+		return JSON.stringify(payload);
+	}
+
+    async exportConfigToClipboard(): Promise<void> {
+		try {
+			const jsonString = this.exportConfigPayloadCompact();
+			await navigator.clipboard.writeText(jsonString);
+			new Notice('Configuration payload copied to clipboard!');
+		} catch (e) {
+			new Notice(`Failed to copy to clipboard: ${String(e)}`);
+		}
+	}
+
+	async importConfig(rawJson: string): Promise<void> {
+		await this.importCompactConfig(rawJson);
+	}
+
+	async importCompactConfig(rawJson: string): Promise<void> {
+		try {
+			const data = JSON.parse(rawJson) as PayloadData | null;
+			if (!data || typeof data !== 'object') throw new Error('Invalid JSON format');
+
+			if (data.v === 1 && data.s) {
+				if (typeof data.s.ci === 'string' && data.s.ci !== this.settings.clientId) {
+					this.settings.clientId = data.s.ci;
+					this.logout();
+				}
+				if (data.s.r) this.settings.rootPath = data.s.r;
+				if (data.s.f) this.settings.folder = data.s.f;
+				if (typeof data.s.e === 'boolean') this.settings.dirNameEncrypt = data.s.e;
+				if (data.s.t) this.settings.trashDir = data.s.t;
+				this.settings.wizardDone = true;
+				await this.saveSettings();
+
+				if (data.sec) {
+					if (data.sec.p) await this.setSecret(PASSWORD_ID, data.sec.p);
+					if (data.sec.s) await this.setSecret(SALT_ID, data.sec.s);
+					if (data.sec.cs) await this.setSecret(CLIENT_SECRET_ID, data.sec.cs);
+					if (data.sec.tk) {
+						const parsedToken = parseRefreshToken(data.sec.tk) || data.sec.tk.trim();
+						if (parsedToken) await this.setSecret(TOKEN_ID, parsedToken);
+					}
+				}
+			} else if (data.settings) {
+				const prevClientId = this.settings.clientId;
+				this.settings = { ...this.settings, ...data.settings, wizardDone: true };
+				if (this.settings.clientId !== prevClientId) this.logout();
+				await this.saveSettings();
+				if (data.secrets) {
+					if (data.secrets.password) await this.setSecret(PASSWORD_ID, data.secrets.password);
+					if (data.secrets.salt) await this.setSecret(SALT_ID, data.secrets.salt);
+					if (data.secrets.clientSecret) await this.setSecret(CLIENT_SECRET_ID, data.secrets.clientSecret);
+					if (data.secrets.token) {
+						const parsedToken = parseRefreshToken(data.secrets.token) || data.secrets.token.trim();
+						if (parsedToken) await this.setSecret(TOKEN_ID, parsedToken);
+					}
+				}
+			}
+
+			this.onConfigImported?.();
+			new Notice(
+				this.ready()
+					? 'Configuration imported successfully! Ready to sync.'
+					: 'Configuration imported! Sign in to Google to start syncing.',
+			);
+		} catch (e) {
+			new Notice(`Import failed: ${String(e)}`);
+		}
+	}
+
+	showQrExportModal(): void {
+		new QrCodeExportModal(this.app, this.exportConfigPayloadCompact()).open();
+	}
 
 	getRemoteSubsystemPath(subsystem: 'vaults' | '_backups' | '_deleted'): string {
 		const root = PathSanitizer.sanitizeRootPath(this.settings.rootPath);
 		const vaultName = PathSanitizer.sanitizeVaultName(this.settings.folder, this.app.vault.getName());
-		return `${root}/${subsystem}/${vaultName}`;
+		return subsystem === '_deleted' ? `${root}/_deleted` : `${root}/${subsystem}/${vaultName}`;
 	}
 
 	getRemoteVaultPath(): string {
@@ -54,9 +693,23 @@ export default class CryptDriveSync extends Plugin {
 	async onload() {
 		setLanguage(getLanguage());
 		this.lastResult = T.never;
-		this.settings = { ...DEFAULTS, ...((await this.loadData()) as Partial<Settings> | null) };
+		const rawData: unknown = await this.loadData();
+		const isFreshInstall = rawData === null || rawData === undefined;
+		this.settings = { ...DEFAULTS, ...(rawData as Partial<Settings> | null) };
 		if (!this.settings.folder) this.settings.folder = this.app.vault.getName();
+
+		// If plugin folder was manually wiped on disk, clear orphaned keychain secrets
+		if (isFreshInstall) {
+			const deviceId = this.deviceId();
+			for (const key of [TOKEN_ID, PASSWORD_ID, SALT_ID, CLIENT_SECRET_ID]) {
+				this.app.secretStorage.setSecret(`crypt-drive-sync-${deviceId}-${key}`, '');
+				this.app.secretStorage.setSecret(`crypt-drive-sync-${key}`, '');
+			}
+		}
+
 		this.base = await this.loadBase();
+
+		this.backupManager = new BackupManager(this);
 
 		this.addSettingTab(new CryptDriveSyncSettingTab(this));
 		this.addRibbonIcon('refresh-cw', T.ribbon, () => void this.sync());
@@ -77,6 +730,34 @@ export default class CryptDriveSync extends Plugin {
 		this.addCommand({ id: 'reset-state', name: T.cmdReset, callback: () => void this.resetState(true) });
 		this.addCommand({ id: 'setup', name: T.cmdWizard, callback: () => this.openWizard() });
 		this.addCommand({ id: 'forget-device', name: T.forgetName, callback: () => void this.forgetDevice() });
+		this.addCommand({ id: 'explore-remote-backups', name: 'Remote backup explorer', callback: () => new RemoteBackupsModal(this, this.backupManager).open() });
+
+		this.registerObsidianProtocolHandler('crypt-drive-sync-import', async (params) => {
+			const encoded = params.payload?.trim();
+			if (!encoded) {
+				new Notice('Qr link is missing configuration data.');
+				return;
+			}
+			try {
+				const rawJson = decodePayloadBase64Url(encoded);
+				JSON.parse(rawJson);
+				try {
+					await navigator.clipboard.writeText(rawJson);
+					new Notice('Configuration copied to clipboard and loaded — tap "import & apply" to confirm.');
+				} catch {
+					new Notice('Configuration loaded from qr link — tap "import & apply" to confirm.');
+				}
+				new ImportConfigModal(
+					this.app,
+					async (confirmedJson) => {
+						await this.importCompactConfig(confirmedJson);
+					},
+					rawJson,
+				).open();
+			} catch (e) {
+				new Notice(`Invalid QR setup link: ${String(e)}`);
+			}
+		});
 
 		this.app.workspace.onLayoutReady(() => {
 			if (!this.ready()) {
@@ -127,7 +808,7 @@ export default class CryptDriveSync extends Plugin {
 		window.clearTimeout(this.editTimer);
 	}
 
-async sync(opts: { quiet?: boolean; dryRun?: boolean } = {}): Promise<void> {
+	async sync(opts: { quiet?: boolean; dryRun?: boolean } = {}): Promise<void> {
 		if (this.running) {
 			if (!opts.quiet) new Notice(`${T.noticePrefix}: Sync is already in progress...`);
 			return;
@@ -165,7 +846,7 @@ async sync(opts: { quiet?: boolean; dryRun?: boolean } = {}): Promise<void> {
 				}
 				p = { ...plan(l, r.files, base, { minDeleteCount: Infinity, maxDeletePct: 100 }), warnings: p.warnings };
 			}
-            if (!p.actions.length) {
+			if (!p.actions.length) {
 				await this.saveBase();
 				const hasWarn = p.warnings.length > 0;
 				const msg = hasWarn ? `${T.noChanges} (${p.warnings.length} warning(s) — see log)` : T.noChanges;
@@ -182,6 +863,7 @@ async sync(opts: { quiet?: boolean; dryRun?: boolean } = {}): Promise<void> {
 					if (base !== this.base) throw new Error(T.staleSettings);
 					this.remoteFilesCache = remote.getFilesCache();
 					await this.saveBase(currentLocalDirs);
+					void this.pruneTrash();
 				},
 				onProgress: (done, total) => this.setStatus(`${T.statusRunning} ${done}/${total}`, T.statusTip(this.lastResult), true),
 				log: (m) => this.log(m),
@@ -191,7 +873,7 @@ async sync(opts: { quiet?: boolean; dryRun?: boolean } = {}): Promise<void> {
 			this.remoteFilesCache = remote.getFilesCache();
 			await this.saveBase(currentLocalDirs);
 
-            const n = (t: Action['type']) => p.actions.filter((a) => a.type === t).length;
+			const n = (t: Action['type']) => p.actions.filter((a) => a.type === t).length;
 			const parts = T.summary(n('upload'), n('download'));
 			if (n('trashRemote') + n('trashLocal')) parts.push(T.sumTrashed(n('trashRemote') + n('trashLocal')));
 			if (res.conflicts.length) parts.push(T.sumConflicts(res.conflicts.length));
@@ -233,10 +915,10 @@ async sync(opts: { quiet?: boolean; dryRun?: boolean } = {}): Promise<void> {
 		return warnings;
 	}
 
-private finish(msg: string, notify: boolean, failed = false, hasWarnings = false) {
-    this.lastSyncAt = Date.now();
-    this.lastResult = `${new Date().toLocaleString()}: ${msg}`;
-    this.log(msg);
+	private finish(msg: string, notify: boolean, failed = false, hasWarnings = false) {
+		this.lastSyncAt = Date.now();
+		this.lastResult = `${new Date().toLocaleString()}: ${msg}`;
+		this.log(msg);
 
 		this.setStatus(
 			failed || hasWarnings ? T.statusError : T.statusOk(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
@@ -244,10 +926,8 @@ private finish(msg: string, notify: boolean, failed = false, hasWarnings = false
 		);
 
 		if (failed || hasWarnings) {
-			// Center-screen blocking window modal (iOS, Android, Windows, Mac, Linux)
 			new AlertModal(this.app, T.noticePrefix, msg).open();
 		} else if (notify) {
-			// Toast notification for clean syncs
 			new Notice(`${T.noticePrefix}: ${msg}`);
 		}
 	}
@@ -335,20 +1015,22 @@ private finish(msg: string, notify: boolean, failed = false, hasWarnings = false
 		const auth = new GoogleAuth(req, c.id, c.secret, this.secret(TOKEN_ID));
 		const crypt = (await this.getCrypt())!;
 		const vaultName = PathSanitizer.sanitizeVaultName(s.folder, this.app.vault.getName());
-		const remoteSubFolder = `${subsystem}/${vaultName}`;
+		const remoteSubFolder = subsystem === '_deleted' ? '_deleted' : `${subsystem}/${vaultName}`;
+		const isVault = subsystem === 'vaults';
+
 		return new CryptDriveFs(
 			new DriveClient(req, auth),
 			crypt,
 			{
 				rootPath: s.rootPath,
 				folder: remoteSubFolder,
-				trashDir: s.trashDir,
+				trashDir: subsystem === '_deleted' ? '' : s.trashDir,
 				createRoot: this.createRoot,
 				dirNameEncrypt: s.dirNameEncrypt,
 			},
 			(encSize: number) => Crypt.decryptedSize(encSize),
-			this.pageToken,
-			this.remoteFilesCache,
+			isVault ? this.pageToken : undefined,
+			isVault ? this.remoteFilesCache : undefined,
 		);
 	}
 
@@ -407,10 +1089,17 @@ private finish(msg: string, notify: boolean, failed = false, hasWarnings = false
 
 	async forgetDevice(onDone: () => void = () => {}): Promise<void> {
 		if (!(await new ConfirmModal(this.app, T.forgetName, T.forgetConfirm, T.forgetButton).ask())) return;
-		for (const key of [TOKEN_ID, PASSWORD_ID, SALT_ID, CLIENT_SECRET_ID]) {
-			this.storeSecret(key, '');
+		
+		const deviceId = this.deviceId();
+		const keys = [TOKEN_ID, PASSWORD_ID, SALT_ID, CLIENT_SECRET_ID];
+		
+		for (const key of keys) {
+			// Clear scoped secret storage
+			this.app.secretStorage.setSecret(`crypt-drive-sync-${deviceId}-${key}`, '');
+			// Clear legacy un-scoped secret storage
 			this.app.secretStorage.setSecret(`crypt-drive-sync-${key}`, '');
 		}
+		
 		this.settings = { ...DEFAULTS, folder: this.app.vault.getName() };
 		await this.saveData(this.settings);
 		await this.resetState();
@@ -436,6 +1125,11 @@ private finish(msg: string, notify: boolean, failed = false, hasWarnings = false
 
 	openLog() {
 		new TextModal(this.app, T.logTitle, this.logLines.join('\n') || T.logEmpty).open();
+	}
+
+	async setBase(newBase: Map<string, BaseEntry>): Promise<void> {
+		this.base = newBase;
+		await this.saveBase();
 	}
 
 	async resetState(notify = false): Promise<void> {
@@ -850,5 +1544,54 @@ class LoginModal extends Modal {
 		this.abort.abort();
 		this.contentEl.empty();
 		this.resolve?.(this.token);
+	}
+}
+
+class ImportConfigModal extends Modal {
+	private onSubmit: (rawJson: string) => Promise<void>;
+	private initialValue: string;
+
+	constructor(app: App, onSubmit: (rawJson: string) => Promise<void>, initialValue = '') {
+		super(app);
+		this.onSubmit = onSubmit;
+		this.initialValue = initialValue;
+		this.setTitle('Import configuration payload');
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.createEl('p', {
+			text: this.initialValue
+				? 'Configuration loaded from qr code (and copied to clipboard). Review or tap "import & apply":'
+				: 'Paste your exported configuration JSON or scanned qr payload string below:',
+		});
+
+		let textValue = this.initialValue;
+		new Setting(contentEl).addTextArea((text) =>
+			text
+				.setPlaceholder('{"v":1,"s":{...},"sec":{...}}')
+				.setValue(this.initialValue)
+				.onChange((val) => {
+					textValue = val;
+				}),
+		);
+
+		new Setting(contentEl)
+			.addButton((btn) =>
+				btn
+					.setButtonText('Import & apply')
+					.setCta()
+					.onClick(async () => {
+						if (!textValue.trim()) return;
+						this.close();
+						await this.onSubmit(textValue.trim());
+					}),
+			)
+			.addButton((btn) => btn.setButtonText('Cancel').onClick(() => this.close()));
+	}
+
+	onClose() {
+		this.contentEl.empty();
 	}
 }

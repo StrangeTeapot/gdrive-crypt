@@ -4,7 +4,7 @@ FORK OF [crypt-drive-sync by mooncodee](https://github.com/mooncodee/crypt-drive
 
 # Google Drive+
 
-End-to-end encrypted Obsidian vault synchronization for Google Drive across Desktop (Windows, macOS, Linux) and Mobile (iOS, Android). Due to cross-platform nature of this fork, the sync flow is aimed at case insensitive systems, therefore does not provide an ability to save files in format: Test.md and test.md in the same folder. Source code of this fork could be modified to provide such functionality.
+End-to-end encrypted Obsidian vault synchronization for Google Drive across Desktop (Windows, macOS, Linux) and Mobile (iOS, Android). Due to cross-platform nature of this fork, the sync flow is aimed at case insensitive systems, therefore does not provide an ability to save files in a format: Test.md and test.md in the same folder. Source code of this project can be modified to provide such functionality, so feel free to make your fork with such update.
 
 Google Drive+ plugin performs pre-upload encryption on your device using the **Rclone crypt** standard (`XSalsa20-Poly1305` for file content and `AES-EME` for file/folder names with key derivation via `scrypt`). Google Drive stores only scrambled data—no note names, folder structures, or text are ever readable by third parties.
 
@@ -23,27 +23,27 @@ Because the encryption format strictly adheres to Rclone standards, your vault c
 
 * **Rclone-Compatible Encryption:** Full client-side zero-knowledge encryption prior to upload.
 * **Vault Snapshots & Automated Backup Rotation:**
-* Trigger manual unencrypted or crypt-stored full vault backups directly from the Obsidian Command Palette (`CTRL+P` / `CMD+P`).
+* Trigger **manual** unencrypted or crypt-stored full vault backups directly from the Obsidian Command Palette (`CTRL+P` / `CMD+P`).
 * Auto-clean history keeping between 1 to 10 rolling snapshots (purges oldest backups automatically on Drive and locally).
-* Flexible storage: save backups to remote folders (e.g., `_backups`) and/or local-only dot folders (e.g., `.backups`).
+* Flexible storage: save backups to remote folders (e.g., `_backups`) and/or local dot folders (e.g., `.backups`).
 
 
 * **Nested Root Directory & Multi-Vault Support:**
 * Define nested root paths on Google Drive (e.g., `backups/my-crypted-obsidian` or `folder1/folder2`).
-* Automatic parent directory creation (`createRoot` support)—no manual folder pre-creation on Drive required.
+* Automatic parent directory creation (`createRoot` support)—no manual folder pre-creation with rclone on Drive required.
 * Multi-vault mapping cleanly isolates individual vaults in separate crypt paths.
 
 
 * **Security & Privacy First:**
 * Uses your own personal Google Cloud OAuth Client ID under the restricted `drive.file` scope. The plugin can only access files and folders it creates.
 * Direct device-to-Google API communication with zero telemetry, zero analytics, and no intermediate servers.
-
+* During settings export QR code is generated on your device via built-in code generator, no third-parties involved in the process, your tokens/secrets/keys are not leaving your device during the process.
 
 * **Platform Native:** Operates seamlessly across desktop and mobile platforms inside Obsidian.
-* **Bilingual Support:** Interface available in English and Russian (matches Obsidian system settings). Interface and all the text related to features that were introduced in this fork are auto-translated.
+* **Multilangual Support:** Legacy feature from original repo, you can add your translation into i18n.ts file. Main language is English, additional translations are provided/supported via auto-translation and user's efforts. 
 * **Sync your plugins and themes!** Use "Sync dot-folder" toggle in advanced options. **Can break multi device sync! Read guide first**
-* **Customisable notes/folders sync** via glob pattern or RegE strings (optional, advanced settings)
-
+* **Customisable notes/folders sync** filter your sync list via glob pattern or RegE strings (optional, advanced settings)
+* **Settings export via QR codes or text string** Includes your login session token (valid for 1 hour since last sync by default). If you completed a setup on one vault you can export settings and almost seamlesslly continue to work in a new vault. __Please check all fields after settings import before proceeding to sync!__
 ---
 
 ## How It Works
@@ -116,6 +116,13 @@ Google Drive (My Drive)
 
 ---
 
+---
+
+[!IMPORTANT]
+Some feature are avaialable via command pallete only (ctrl+p/cmd+p) Please open command pallete, type 'google drive+' to check available functions such as backup explorer/backup restore!
+
+---
+
 ## Setup Guide
 
 Setting up requires a one-time configuration of your own free Google Cloud OAuth Client ID (takes approximately 5 minutes).
@@ -151,7 +158,7 @@ Setting up requires a one-time configuration of your own free Google Cloud OAuth
 
 ## Vault Snapshots & Backup Rotation
 
-The plugin includes a manual vault snapshot engine designed for creating point-in-time archives of your vault.
+The plugin includes a **manual** vault snapshot engine designed for creating point-in-time archives of your vault.
 
 ### Triggering a Snapshot
 
@@ -162,8 +169,8 @@ The plugin includes a manual vault snapshot engine designed for creating point-i
 ### Configurable Rotation & Local Storage
 
 * **Snapshot Retention (1 to 10):** Configure the maximum snapshot count in settings. When the limit is reached, the oldest snapshot on Google Drive (or locally) is automatically deleted.
-* **Local-Only Backups:** To keep backups on your local device without syncing them to Google Drive. Also the plugin automatically ignores all dot-folders during normal cloud sync.
-* **Encryption Notice:** The archive itself is a standard zip file. When synced to Google Drive through an encrypted root path, it is encrypted on-the-fly like all other vault contents.
+* **Local Backups:** To keep backups on your local device without syncing them to Google Drive. Also the plugin automatically ignores all dot-folders during normal cloud sync.
+* **Encryption Notice:** The archive itself is a standard zip file. When synced to Google Drive through an encrypted root path, it is encrypted on-the-fly like all other vault contents. __Local copy stored on your device is not encrypted at all!__
 
 ---
 
@@ -227,8 +234,11 @@ password2 = <YOUR_OBSCURED_SALT>
 ## Security & Disclosures
 
 * **Network Traffic:** The plugin communicates exclusively with official Google API endpoints:
-* `oauth2.googleapis.com` — OAuth token authentication and refreshes.
-* `[www.googleapis.com](https://www.googleapis.com)` — Google Drive API v3 operations.
+* [https://oauth2.googleapis.com](https://oauth2.googleapis.com) — POST /device/code and POST /token for Google OAuth 2.0 device sign-in and refreshing access tokens.
+* [https://www.googleapis.com/drive/v3](https://www.googleapis.com/drive/v3) — /files, /files/{id}, /changes, and /changes/startPageToken for listing files, creating folders, reading metadata, downloading, moving/trashing, and incremental Changes API sync.
+* [https://www.googleapis.com/upload/drive/v3](https://www.googleapis.com/upload/drive/v3) — /files and /files/{id} for multipart and resumable encrypted file uploads.
+* Browser sign-in page (window.open) — Opens the verification_url / verification_uri returned by Google's /device/code response in your browser when you click the login button
+* No third-party servers — QR code export generation runs 100% offline locally, and no telemetry, analytics, or external relay hosts are contacted.
 
 
 * **Scope Isolation:** Requests only `[https://www.googleapis.com/auth/drive.file](https://www.googleapis.com/auth/drive.file)`. The plugin has zero visibility or access to the rest of your Google Drive.
@@ -245,6 +255,9 @@ npm install
 
 # Run byte-for-byte rclone compatibility tests
 npm test
+
+# Lint test
+npm run lint
 
 # Build production bundle
 npm run build

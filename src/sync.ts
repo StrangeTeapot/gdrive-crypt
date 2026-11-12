@@ -13,7 +13,12 @@ export type Action =
 export interface PlanOptions { minDeleteCount: number; maxDeletePct: number } // defaults 10 / 20
 export interface Plan { actions: Action[]; blocked?: string; warnings: string[] }
 
-const changed = (l: LocalEntry, b: BaseEntry) => l.mtime !== b.mtime || l.size !== b.size;
+const changed = (l: LocalEntry, b: BaseEntry) => Math.abs(l.mtime - b.mtime) > 2000 || l.size !== b.size;
+
+function isSameFile(l: LocalEntry, r: RemoteEntry): boolean {
+	const mtimeDiff = Math.abs(l.mtime - r.mtime);
+	return l.size === r.size && mtimeDiff <= 2000;
+}
 
 export function plan(
 	local: Map<string, LocalEntry>,
@@ -96,7 +101,12 @@ export function plan(
 
 		if (l && r) {
 			// Both local and remote exist under this canonical key
-			const lc = !b || l.mtime !== b.mtime || l.size !== b.size || (bPath !== undefined && lPath !== bPath);
+			if (!b && isSameFile(l, r) && lPath === rPath) {
+				// No base entry, but local and remote are identical within 2s ZIP tolerance: in sync
+				continue;
+			}
+
+			const lc = !b || changed(l, b) || (bPath !== undefined && lPath !== bPath);
 			const rc = !b || r.md5 !== b.md5 || (bPath !== undefined && rPath !== bPath);
 
 			if (lc && rc && lPath !== rPath) {
@@ -114,7 +124,7 @@ export function plan(
 			}
 		} else if (l) {
 			// Present locally, absent remotely
-			const lc = !b || l.mtime !== b.mtime || l.size !== b.size;
+			const lc = !b || changed(l, b);
 			if (!b || lc) {
 				actions.push({ type: 'upload', path: lPath! });
 			} else {
@@ -229,7 +239,7 @@ export async function apply(
 			base.set(path, { mtime: e.mtime, size: e.size, md5: r.md5 });
 		},
 		conflict,
-        trashRemote: async (path) => {
+		trashRemote: async (path) => {
 			const r = await remote.stat(path);
 			const b = base.get(path);
 			if (r && b && r.md5 !== b.md5) throw new Error(T.errRemoteChanged);

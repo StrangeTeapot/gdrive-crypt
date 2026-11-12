@@ -83,6 +83,19 @@ export class SetupWizard extends Modal {
 
 		if (step === 'intro') {
 			this.text(T.wizIntro);
+
+			const importDiv = el.createDiv({ cls: 'cds-wizard-import-link' });
+			importDiv.addClass('cds-wizard-import');
+			new Setting(importDiv)
+				.setName('Already configured another vault?')
+				.setDesc('Scan or paste a qr configuration code to skip setup.')
+				.addButton((btn) =>
+					btn.setButtonText('Import setup').onClick(() => {
+						this.close();
+						void p.promptImportConfig();
+					}),
+				);
+
 			this.nav({ label: T.wizStart, enabled: true, onClick: next });
 		} else if (step === 'client') {
 			this.text([T.clientPageDesc]);
