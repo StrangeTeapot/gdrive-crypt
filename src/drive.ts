@@ -437,17 +437,64 @@ export class CryptDriveFs implements RemoteFs {
 		return this.pageToken;
 	}
 
+	private async getProtectedFolderIds(): Promise<Set<string>> {
+		const protectedIds = new Set<string>(['root']);
+		const rootId = await this.dirId(this.cfg.rootPath.split('/').filter(Boolean), false);
+		if (rootId) protectedIds.add(rootId);
+		const topId = await this.dirId(this.loc('_').dir, false);
+		if (topId) protectedIds.add(topId);
+		return protectedIds;
+	}
+
 	async cleanEmptyRemoteFolders(): Promise<void> {
 		if (this.pendingFolderCleanup.size === 0) return;
 		const targets = Array.from(this.pendingFolderCleanup);
 		this.pendingFolderCleanup.clear();
+		const protectedIds = await this.getProtectedFolderIds();
 		for (const folderId of targets) {
-			await this.pruneFolderIfEmpty(folderId);
+			await this.pruneFolderIfEmpty(folderId, protectedIds);
 		}
 	}
 
-private async pruneFolderIfEmpty(folderId: string): Promise<boolean> {
-		if (!folderId || folderId === 'root') return false;
+	async purgeEmptySubfoldersForSubpaths(subpaths: string[]): Promise<number> {
+		if (!subpaths.length || this.folderIdToPath.size === 0) return 0;
+		const protectedIds = await this.getProtectedFolderIds();
+		const candidates: { id: string; depth: number }[] = [];
+
+		for (const [folderId, encRel] of this.folderIdToPath.entries()) {
+			if (!encRel || protectedIds.has(folderId)) continue;
+			let decPath: string;
+			try {
+				decPath = (this.cfg.dirNameEncrypt === false ? encRel : this.crypt.decryptPath(encRel)).normalize('NFC');
+			} catch {
+				continue;
+			}
+			if (
+				subpaths.some(
+					(sub) =>
+						decPath === sub ||
+						decPath.startsWith(`${sub}/`) ||
+						decPath.endsWith(`/${sub}`) ||
+						decPath.includes(`/${sub}/`),
+				)
+			) {
+				candidates.push({ id: folderId, depth: decPath.split('/').length });
+			}
+		}
+
+		candidates.sort((a, b) => b.depth - a.depth);
+		let removed = 0;
+		for (const candidate of candidates) {
+			if (!this.folderIdToPath.has(candidate.id)) continue;
+			if (await this.pruneFolderIfEmpty(candidate.id, protectedIds)) {
+				removed++;
+			}
+		}
+		return removed;
+	}
+
+	private async pruneFolderIfEmpty(folderId: string, protectedIds: Set<string>): Promise<boolean> {
+		if (!folderId || protectedIds.has(folderId)) return false;
 		const children = await this.drive.list(folderId);
 		if (children.length === 0) {
 			const folderMeta = await this.drive.get(folderId);
@@ -468,8 +515,8 @@ private async pruneFolderIfEmpty(folderId: string): Promise<boolean> {
 			}
 			this.folderIdToPath.delete(folderId);
 
-			if (parentId) {
-				await this.pruneFolderIfEmpty(parentId);
+			if (parentId && !protectedIds.has(parentId)) {
+				await this.pruneFolderIfEmpty(parentId, protectedIds);
 			}
 			return true;
 		}
@@ -507,7 +554,7 @@ private async listFull(): Promise<{ files: Map<string, RemoteEntry>; warnings: s
 
 		let rootId = await this.dirId(root, false);
 		if (!rootId) {
-			if (this.cfg.createRoot) {
+if (this.cfg.createRoot) {
 				await this.dirId(top, true);
 				rootId = await this.dirId(root, false);
 				if (!rootId) {
@@ -533,7 +580,7 @@ private async listFull(): Promise<{ files: Map<string, RemoteEntry>; warnings: s
 			throw new Error("can't decrypt names in the crypt root — wrong password, salt or folder-name encryption setting");
 		}
 
-const id = await this.dirId(top, false);
+		const id = await this.dirId(top, false);
 		if (id) {
 			this.folderIdToPath.set(id, '');
 			await this.walk(id, '', [], files, warnings);
@@ -543,7 +590,7 @@ const id = await this.dirId(top, false);
 		return { files, warnings };
 	}
 
-private async listIncremental(token: string): Promise<{ files: Map<string, RemoteEntry>; warnings: string[] }> {
+	private async listIncremental(token: string): Promise<{ files: Map<string, RemoteEntry>; warnings: string[] }> {
 		const { changes, newStartPageToken } = await this.drive.listChanges(token);
 		const warnings: string[] = [];
 
@@ -655,9 +702,8 @@ private async listIncremental(token: string): Promise<{ files: Map<string, Remot
 		this.listed = true;
 		return { files, warnings };
 	}
-	
 
-private async walk(
+	private async walk(
 		id: string,
 		encRel: string,
 		chain: string[],
@@ -716,6 +762,16 @@ private async walk(
 		const known = this.files.get(path) ?? (await this.find(path));
 		if (!known) return;
 		this.pendingFolderCleanup.add(known.parent);
+		if (!this.cfg.trashDir) {
+			await this.drive.call({
+				url: `${API}/files/${known.id}`,
+				method: 'PATCH',
+				contentType: JSON_TYPE,
+				body: JSON.stringify({ trashed: true }),
+			});
+			this.files.delete(path);
+			return;
+		}
 		const prefix = `${this.cfg.trashDir}/${today()}/${this.cfg.folder}`;
 		const target = this.loc(path, prefix);
 		const to = (await this.dirId(target.dir, true))!;
