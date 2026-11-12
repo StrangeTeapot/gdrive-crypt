@@ -216,7 +216,7 @@ export class BackupManager {
 		return localPath;
 	}
 
-	async restoreFromZip(zipBytes: Uint8Array): Promise<void> {
+	async restoreFromZip(zipBytes: Uint8Array, backupMtime?: number): Promise<void> {
 		if (this.isRestoring) return;
 		this.isRestoring = true;
 
@@ -319,11 +319,15 @@ export class BackupManager {
 				const stat = await adapter.stat(cleanPath);
 				if (stat) {
 					const rEntry = remoteFiles.get(cleanPath);
-					newBase.set(cleanPath, {
-						mtime: stat.mtime,
-						size: stat.size,
-						md5: rEntry?.md5 ?? '',
-					});
+					if (rEntry) {
+						const changedSinceBackup =
+							stat.size !== rEntry.size || (backupMtime !== undefined && rEntry.mtime > backupMtime + 2000);
+						newBase.set(cleanPath, {
+							mtime: changedSinceBackup ? 0 : stat.mtime,
+							size: changedSinceBackup ? rEntry.size : stat.size,
+							md5: rEntry.md5,
+						});
+					}
 				}
 			}
 
@@ -522,7 +526,7 @@ export class RemoteBackupsModal extends Modal {
 							if (!remote) throw new Error('Remote connection unavailable');
 
 							const rawBytes = await remote.read(item.decryptedName);
-							await this.manager.restoreFromZip(rawBytes);
+							await this.manager.restoreFromZip(rawBytes, item.mtime);
 							notice.hide();
 
 							new Notice('Vault restoration complete! Reloading workspace...');

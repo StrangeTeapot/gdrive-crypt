@@ -8,7 +8,8 @@ export type Action =
 	| { type: 'conflict'; path: string } // both changed (or both new w/o base): resolve during apply
 	| { type: 'trashRemote'; path: string }
 	| { type: 'trashLocal'; path: string }
-	| { type: 'forget'; path: string }; // deleted on both sides → drop from base
+	| { type: 'forget'; path: string } // deleted on both sides → drop from base
+	| { type: 'adopt'; path: string; entry: BaseEntry }; // identical on both sides w/o base → record in base
 
 export interface PlanOptions { minDeleteCount: number; maxDeletePct: number } // defaults 10 / 20
 export interface Plan { actions: Action[]; blocked?: string; warnings: string[] }
@@ -102,7 +103,8 @@ export function plan(
 		if (l && r) {
 			// Both local and remote exist under this canonical key
 			if (!b && isSameFile(l, r) && lPath === rPath) {
-				// No base entry, but local and remote are identical within 2s ZIP tolerance: in sync
+				// No base entry, but local and remote are identical within 2s ZIP tolerance: record baseline
+				actions.push({ type: 'adopt', path: lPath!, entry: { mtime: l.mtime, size: l.size, md5: r.md5 } });
 				continue;
 			}
 
@@ -256,10 +258,23 @@ export async function apply(
 		forget: async (path) => {
 			base.delete(path);
 		},
+		adopt: async () => {},
 	};
 
+	let adopted = false;
+	for (const a of p.actions) {
+		if (a.type === 'adopt') {
+			base.set(a.path, a.entry);
+			adopted = true;
+		}
+	}
+	if (adopted) {
+		await hooks.saveBase(base);
+	}
+
 	const isDelete = (a: Action) => a.type === 'trashRemote' || a.type === 'trashLocal' || a.type === 'forget';
-	const queue = [...p.actions.filter((a) => !isDelete(a)), ...p.actions.filter(isDelete)];
+	const realActions = p.actions.filter((a) => a.type !== 'adopt');
+	const queue = [...realActions.filter((a) => !isDelete(a)), ...realActions.filter(isDelete)];
 	for (const [i, a] of queue.entries()) {
 		try {
 			await run[a.type](a.path);

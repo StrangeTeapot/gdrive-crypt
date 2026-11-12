@@ -429,6 +429,7 @@ export default class CryptDriveSync extends Plugin {
 	private remoteFilesCache = new Map<string, CachedRemoteFile>();
 	private running = false;
 	private lastSyncAt = 0;
+	private lastTrashPruneAt = 0;
 	private logLines: string[] = [];
 	private status?: { el: HTMLElement; icon: HTMLElement; text: HTMLElement };
 	private crypt?: { key: string; crypt: Crypt };
@@ -822,6 +823,7 @@ export default class CryptDriveSync extends Plugin {
 			const remote = await this.remote(!opts.quiet);
 			if (!remote) return;
 			const local = new VaultFs(this);
+			const prevPageToken = this.pageToken;
 			const [l, r] = await Promise.all([local.list(), remote.list()]);
 
 			this.pageToken = remote.getPageToken();
@@ -833,12 +835,14 @@ export default class CryptDriveSync extends Plugin {
 			p.warnings.unshift(...warnings);
 			p.warnings.forEach((w) => this.log(`\u26a0 ${w}`));
 
+			const hasSyncActions = p.actions.some((a) => a.type !== 'adopt');
+
 			if (opts.dryRun) {
 				this.finish(T.planTitle, false);
 				await new PlanModal(this.app, p, false).ask();
 				return;
 			}
-			if (p.blocked || (this.settings.confirmPlan && p.actions.length)) {
+			if (p.blocked || (this.settings.confirmPlan && hasSyncActions)) {
 				const remoteGone = r.files.size === 0 && base.size > 0;
 				if (!(await new PlanModal(this.app, p, !remoteGone).ask())) {
 					this.finish(p.blocked ? T.stopped(p.blocked) : T.cancelled, true);
@@ -846,8 +850,17 @@ export default class CryptDriveSync extends Plugin {
 				}
 				p = { ...plan(l, r.files, base, { minDeleteCount: Infinity, maxDeletePct: 100 }), warnings: p.warnings };
 			}
-			if (!p.actions.length) {
-				await this.saveBase();
+			if (!hasSyncActions) {
+				let adopted = false;
+				for (const a of p.actions) {
+					if (a.type === 'adopt') {
+						base.set(a.path, a.entry);
+						adopted = true;
+					}
+				}
+				if (adopted || this.pageToken !== prevPageToken) {
+					await this.saveBase();
+				}
 				const hasWarn = p.warnings.length > 0;
 				const msg = hasWarn ? `${T.noChanges} (${p.warnings.length} warning(s) — see log)` : T.noChanges;
 				this.finish(msg, !opts.quiet || hasWarn, false, hasWarn);
@@ -863,7 +876,6 @@ export default class CryptDriveSync extends Plugin {
 					if (base !== this.base) throw new Error(T.staleSettings);
 					this.remoteFilesCache = remote.getFilesCache();
 					await this.saveBase(currentLocalDirs);
-					void this.pruneTrash();
 				},
 				onProgress: (done, total) => this.setStatus(`${T.statusRunning} ${done}/${total}`, T.statusTip(this.lastResult), true),
 				log: (m) => this.log(m),
@@ -872,6 +884,11 @@ export default class CryptDriveSync extends Plugin {
 			await remote.cleanEmptyRemoteFolders();
 			this.remoteFilesCache = remote.getFilesCache();
 			await this.saveBase(currentLocalDirs);
+
+			if (Date.now() - this.lastTrashPruneAt >= 6 * 60 * 60_000) {
+				this.lastTrashPruneAt = Date.now();
+				void this.pruneTrash();
+			}
 
 			const n = (t: Action['type']) => p.actions.filter((a) => a.type === t).length;
 			const parts = T.summary(n('upload'), n('download'));
@@ -1188,17 +1205,13 @@ export default class CryptDriveSync extends Plugin {
 		if (currentDirs) this.baseDirs = currentDirs;
 		await this.app.vault.adapter.write(
 			this.statePath,
-			JSON.stringify(
-				{
-					device: this.deviceId(),
-					base: Object.fromEntries(this.base),
-					dirs: Array.from(this.baseDirs),
-					pageToken: this.pageToken ?? null,
-					remoteFiles: Object.fromEntries(this.remoteFilesCache),
-				},
-				null,
-				2,
-			),
+			JSON.stringify({
+				device: this.deviceId(),
+				base: Object.fromEntries(this.base),
+				dirs: Array.from(this.baseDirs),
+				pageToken: this.pageToken ?? null,
+				remoteFiles: Object.fromEntries(this.remoteFilesCache),
+			}),
 		);
 	}
 }
@@ -1439,9 +1452,10 @@ class PlanModal extends Modal {
 		const el = this.contentEl;
 		if (p.blocked) el.createEl('p', { text: T.stopped(p.blocked), cls: 'mod-warning' });
 		for (const w of p.warnings) el.createEl('p', { text: `\u26a0 ${w}` });
-		if (!p.actions.length) el.createEl('p', { text: T.planNothing });
-		for (const type of Object.keys(T.actions) as Action['type'][]) {
-			const paths = p.actions.filter((a) => a.type === type).map((a) => a.path);
+		const visibleActions = p.actions.filter((a) => a.type !== 'adopt');
+		if (!visibleActions.length) el.createEl('p', { text: T.planNothing });
+		for (const type of Object.keys(T.actions) as (keyof typeof T.actions)[]) {
+			const paths = visibleActions.filter((a) => a.type === type).map((a) => a.path);
 			if (!paths.length) continue;
 			const d = el.createEl('details');
 			d.createEl('summary', { text: `${T.actions[type]}: ${paths.length}` });
@@ -1451,7 +1465,7 @@ class PlanModal extends Modal {
 			});
 		}
 		const s = new Setting(el);
-		if (canApply && p.actions.length)
+		if (canApply && visibleActions.length)
 			s.addButton((b) =>
 				b
 					.setButtonText(T.planApply)
