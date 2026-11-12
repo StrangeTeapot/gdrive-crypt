@@ -4,7 +4,7 @@ FORK OF [crypt-drive-sync by mooncodee](https://github.com/mooncodee/crypt-drive
 
 # Google Drive+
 
-End-to-end encrypted Obsidian vault synchronization for Google Drive across Desktop (Windows, macOS, Linux) and Mobile (iOS, Android). Due to cross-platform nature of this fork, the sync flow is aimed at case insensitive systems, therefore does not provide an ability to save files in a format: Test.md and test.md in the same folder. Source code of this project can be modified to provide such functionality, so feel free to make your fork with such update.
+End-to-end encrypted Obsidian vault synchronisation for Google Drive across Desktop (Windows, macOS, Linux) and Mobile (iOS, Android). Due to cross-platform nature of this fork, the sync flow is aimed at case insensitive systems, therefore does not provide an ability to save files in a format: Test.md and test.md in the same folder. Source code of this project can be modified to provide such functionality, so feel free to make your fork with such update.
 
 Google Drive+ plugin performs pre-upload encryption on your device using the **Rclone crypt** standard (`XSalsa20-Poly1305` for file content and `AES-EME` for file/folder names with key derivation via `scrypt`). Google Drive stores only scrambled data—no note names, folder structures, or text are ever readable by third parties.
 
@@ -40,10 +40,10 @@ Because the encryption format strictly adheres to Rclone standards, your vault c
 * During settings export QR code is generated on your device via built-in code generator, no third-parties involved in the process, your tokens/secrets/keys are not leaving your device during the process.
 
 * **Platform Native:** Operates seamlessly across desktop and mobile platforms inside Obsidian.
-* **Multilangual Support:** Legacy feature from original repo, you can add your translation into i18n.ts file. Main language is English, additional translations are provided/supported via auto-translation and user's efforts. 
+* **Multilanguage Support:** Legacy feature from original repo, you can add your translation into i18n.ts file. Main language is English, additional translations are provided/supported via auto-translation and user's efforts. 
 * **Sync your plugins and themes!** Use "Sync dot-folder" toggle in advanced options. **Can break multi device sync! Read guide first**
 * **Customisable notes/folders sync** filter your sync list via glob pattern or RegE strings (optional, advanced settings)
-* **Settings export via QR codes or text string** Includes your login session token (valid for 1 hour since last sync by default). If you completed a setup on one vault you can export settings and almost seamlesslly continue to work in a new vault. __Please check all fields after settings import before proceeding to sync!__
+* **Settings export via QR codes or text string** Includes your login session token (valid for 1 hour since last sync by default). If you completed a setup on one vault you can export settings and almost seamlessly continue to work in a new vault. __Please check all fields after settings import before proceeding to sync!__
 ---
 
 ## How It Works
@@ -116,12 +116,9 @@ Google Drive (My Drive)
 
 ---
 
----
+> [!IMPORTANT]
+> Some feature are available via command palette only (ctrl+p/cmd+p) Please open command palette, type 'google drive+' to check available functions such as backup explorer/backup restore!
 
-[!IMPORTANT]
-Some feature are avaialable via command pallete only (ctrl+p/cmd+p) Please open command pallete, type 'google drive+' to check available functions such as backup explorer/backup restore!
-
----
 
 ## Setup Guide
 
@@ -227,7 +224,7 @@ password2 = <YOUR_OBSCURED_SALT>
 
 1. **Shared Client ID Required:** Under Google's restricted `drive.file` scope, Rclone can only view files created by the plugin if both Rclone and the plugin use the **exact same OAuth Client ID**.
 2. **Uploading via Rclone:** Always use `rclone copy` rather than `rclone move` when pushing files to Google Drive. An `rclone copy` generates new server-side objects under your Client ID, ensuring the plugin retains permission to manage them.
-3. **Directory Visibility:** In raw Google Drive view (`gdrive:`), root path folders (e.g., `my-crypted-obsidian` and `vault2`) appear in plaintext so navigation paths can resolve. All contents inside those folders are fully encrypted. Opening the crypt remotes (`vault1-crypt:` or `vault2-crypt:`) automatically decrypts the directory contents on the fly via rclone gui or compatiable.
+3. **Directory Visibility:** In raw Google Drive view (`gdrive:`), root path folders (e.g., `my-crypted-obsidian` and `vault2`) appear in plaintext so navigation paths can resolve. All contents inside those folders are fully encrypted. Opening the crypt remotes (`vault1-crypt:` or `vault2-crypt:`) automatically decrypts the directory contents on the fly via rclone gui or compatible.
 
 ---
 
