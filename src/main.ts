@@ -859,6 +859,9 @@ export default class CryptDriveSync extends Plugin {
 				};
 			}
 			if (!hasSyncActions) {
+				if (opts.reconcile) {
+					await remote.cleanEmptyRemoteFolders();
+				}
 				let adopted = false;
 				for (const a of p.actions) {
 					if (a.type === 'adopt') {

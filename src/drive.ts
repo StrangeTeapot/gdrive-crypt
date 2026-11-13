@@ -447,12 +447,28 @@ export class CryptDriveFs implements RemoteFs {
 	}
 
 	async cleanEmptyRemoteFolders(): Promise<void> {
-		if (this.pendingFolderCleanup.size === 0) return;
-		const targets = Array.from(this.pendingFolderCleanup);
-		this.pendingFolderCleanup.clear();
 		const protectedIds = await this.getProtectedFolderIds();
-		for (const folderId of targets) {
-			await this.pruneFolderIfEmpty(folderId, protectedIds);
+
+		if (this.pendingFolderCleanup.size > 0) {
+			const targets = Array.from(this.pendingFolderCleanup);
+			this.pendingFolderCleanup.clear();
+			for (const folderId of targets) {
+				await this.pruneFolderIfEmpty(folderId, protectedIds);
+			}
+		}
+
+		// Also sweep any empty vault folders discovered during a full listing (e.g., Reconcile or cross-device deletes)
+		if (this.listed && this.folderIdToPath.size > 0) {
+			const candidates: { id: string; depth: number }[] = [];
+			for (const [folderId, encRel] of this.folderIdToPath.entries()) {
+				if (!encRel || protectedIds.has(folderId)) continue;
+				candidates.push({ id: folderId, depth: encRel.split('/').length });
+			}
+			candidates.sort((a, b) => b.depth - a.depth);
+			for (const candidate of candidates) {
+				if (!this.folderIdToPath.has(candidate.id)) continue;
+				await this.pruneFolderIfEmpty(candidate.id, protectedIds);
+			}
 		}
 	}
 
@@ -769,7 +785,7 @@ if (this.cfg.createRoot) {
 	}
 
 	async trash(path: string): Promise<void> {
-		const known = this.files.get(path) ?? (await this.find(path));
+		const known = await this.find(path);
 		if (!known) return;
 		this.pendingFolderCleanup.add(known.parent);
 		if (!this.cfg.trashDir) {
