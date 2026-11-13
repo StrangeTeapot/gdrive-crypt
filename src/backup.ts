@@ -10,6 +10,126 @@ function toArrayBuffer(u: Uint8Array): ArrayBuffer {
 	return buf;
 }
 
+const MIN_VALID_MTIME = 315532800000; // 1980-01-01T00:00:00.000Z (MS-DOS epoch start)
+const MAX_VALID_MTIME = 4102444800000; // 2100-01-01T00:00:00.000Z
+
+function isValidMtime(mtime: number): boolean {
+	return Number.isFinite(mtime) && mtime >= MIN_VALID_MTIME && mtime <= MAX_VALID_MTIME;
+}
+
+function buildZipFileOptions(mtime: number): { mtime: number; extra?: Record<number, Uint8Array> } {
+	const safeMtime = isValidMtime(mtime) ? mtime : Date.now();
+	const unixSeconds = Math.floor(safeMtime / 1000);
+	const utExtra = new Uint8Array(5);
+	utExtra[0] = 0x01; // Flag bit 0: UTC modification time present
+	new DataView(utExtra.buffer).setUint32(1, unixSeconds >>> 0, true);
+	return {
+		mtime: safeMtime,
+		extra: { 0x5455: utExtra },
+	};
+}
+
+function extractZipMtimes(zipBytes: Uint8Array): Map<string, number> {
+	const mtimes = new Map<string, number>();
+	if (zipBytes.byteLength < 22) return mtimes;
+
+	const view = new DataView(zipBytes.buffer, zipBytes.byteOffset, zipBytes.byteLength);
+	const minEocdOffset = Math.max(0, zipBytes.byteLength - 65557);
+	let eocdOffset = -1;
+
+	for (let i = zipBytes.byteLength - 22; i >= minEocdOffset; i--) {
+		if (view.getUint32(i, true) === 0x06054b50) {
+			const commentLen = view.getUint16(i + 20, true);
+			if (i + 22 + commentLen === zipBytes.byteLength) {
+				eocdOffset = i;
+				break;
+			}
+			if (eocdOffset === -1) {
+				eocdOffset = i;
+			}
+		}
+	}
+
+	if (eocdOffset === -1) return mtimes;
+
+	const cdSize = view.getUint32(eocdOffset + 12, true);
+	const cdOffset = view.getUint32(eocdOffset + 16, true);
+	if (cdOffset >= zipBytes.byteLength) return mtimes;
+
+	const cdEnd = Math.min(zipBytes.byteLength, cdOffset + cdSize);
+	const decoder = new TextDecoder('utf-8');
+	let pos = cdOffset;
+
+	while (pos + 46 <= cdEnd) {
+		if (view.getUint32(pos, true) !== 0x02014b50) break;
+
+		const dosTime = view.getUint16(pos + 12, true);
+		const dosDate = view.getUint16(pos + 14, true);
+		const nameLen = view.getUint16(pos + 28, true);
+		const extraLen = view.getUint16(pos + 30, true);
+		const commentLen = view.getUint16(pos + 32, true);
+
+		const nameStart = pos + 46;
+		const extraStart = nameStart + nameLen;
+		const extraEnd = extraStart + extraLen;
+		const nextPos = extraEnd + commentLen;
+		if (nextPos > zipBytes.byteLength) break;
+
+		const rawName = decoder.decode(zipBytes.subarray(nameStart, extraStart));
+		pos = nextPos;
+
+		if (!rawName || rawName.endsWith('/') || rawName.endsWith('\\')) continue;
+		const cleanPath = normalizePath(rawName.replace(/\\/g, '/')).normalize('NFC');
+
+		let resolvedMtime: number | undefined;
+
+		// 1. Prefer PKWARE / Info-ZIP Extended Timestamp extra field (0x5455, UTC Unix seconds)
+		let ep = extraStart;
+		while (ep + 4 <= extraEnd) {
+			const headerId = view.getUint16(ep, true);
+			const dataSize = view.getUint16(ep + 2, true);
+			ep += 4;
+			if (ep + dataSize > extraEnd) break;
+
+			if (headerId === 0x5455 && dataSize >= 5) {
+				const utFlags = zipBytes[ep]!;
+				if ((utFlags & 0x01) !== 0) {
+					const unixSeconds = view.getUint32(ep + 1, true);
+					const candidateMs = unixSeconds * 1000;
+					if (isValidMtime(candidateMs)) {
+						resolvedMtime = candidateMs;
+					}
+				}
+			}
+			ep += dataSize;
+		}
+
+		// 2. Fallback to legacy MS-DOS date/time header for older backup archives
+		if (resolvedMtime === undefined && dosDate !== 0) {
+			const second = (dosTime & 0x1f) * 2;
+			const minute = (dosTime >> 5) & 0x3f;
+			const hour = (dosTime >> 11) & 0x1f;
+			const day = dosDate & 0x1f;
+			const month = (dosDate >> 5) & 0x0f;
+			const year = ((dosDate >> 9) & 0x7f) + 1980;
+
+			if (month >= 1 && month <= 12 && day >= 1 && day <= 31 && hour <= 23 && minute <= 59 && second <= 59) {
+				const candidateMs = new Date(year, month - 1, day, hour, minute, second).getTime();
+				if (isValidMtime(candidateMs)) {
+					resolvedMtime = candidateMs;
+				}
+			}
+		}
+
+		if (resolvedMtime !== undefined) {
+			mtimes.set(cleanPath, resolvedMtime);
+		}
+	}
+
+	return mtimes;
+}
+
+
 class ConfirmModal extends Modal {
 	private ok = false;
 	private resolve?: (ok: boolean) => void;
@@ -88,7 +208,7 @@ export class BackupManager {
 			}
 
 			const files = this.plugin.app.vault.getFiles();
-			const zipData: Record<string, [Uint8Array, { mtime: number }]> = {};
+			const zipData: Record<string, [Uint8Array, { mtime: number; extra?: Record<number, Uint8Array> }]> = {};
 
 			for (const file of files) {
 				const nfcPath = normalizePath(file.path.normalize('NFC'));
@@ -96,7 +216,7 @@ export class BackupManager {
 				if (localBackupFolder && (nfcPath === localBackupFolder || nfcPath.startsWith(`${localBackupFolder}/`))) continue;
 
 				const content = new Uint8Array(await this.plugin.app.vault.readBinary(file));
-				zipData[nfcPath] = [content, { mtime: file.stat.mtime }];
+				zipData[nfcPath] = [content, buildZipFileOptions(file.stat.mtime)];
 			}
 
 			const zipped = zipSync(zipData);
@@ -116,7 +236,7 @@ export class BackupManager {
 		const notice = new Notice('Creating local & remote vault backup...', 0);
 		try {
 			const files = this.plugin.app.vault.getFiles();
-			const zipData: Record<string, [Uint8Array, { mtime: number }]> = {};
+			const zipData: Record<string, [Uint8Array, { mtime: number; extra?: Record<number, Uint8Array> }]> = {};
 
 			for (const file of files) {
 				const nfcPath = normalizePath(file.path.normalize('NFC'));
@@ -124,7 +244,7 @@ export class BackupManager {
 				if (localBackupFolder && (nfcPath === localBackupFolder || nfcPath.startsWith(`${localBackupFolder}/`))) continue;
 
 				const content = new Uint8Array(await this.plugin.app.vault.readBinary(file));
-				zipData[nfcPath] = [content, { mtime: file.stat.mtime }];
+				zipData[nfcPath] = [content, buildZipFileOptions(file.stat.mtime)];
 			}
 
 			const zipped = zipSync(zipData);
@@ -216,11 +336,12 @@ export class BackupManager {
 		return localPath;
 	}
 
-	async restoreFromZip(zipBytes: Uint8Array): Promise<void> {
+	async restoreFromZip(zipBytes: Uint8Array, backupMtime?: number): Promise<void> {
 		if (this.isRestoring) return;
 		this.isRestoring = true;
 
 		try {
+			const zipMtimes = extractZipMtimes(zipBytes);
 			const unzipped = unzipSync(zipBytes);
 			const app = this.plugin.app;
 			const adapter = app.vault.adapter;
@@ -314,16 +435,25 @@ export class BackupManager {
 				}
 
 				const buffer = toArrayBuffer(content);
-				await adapter.writeBinary(cleanPath, buffer);
+				const restoredMtime = zipMtimes.get(cleanPath);
+				if (restoredMtime !== undefined) {
+					await adapter.writeBinary(cleanPath, buffer, { mtime: restoredMtime });
+				} else {
+					await adapter.writeBinary(cleanPath, buffer);
+				}
 
 				const stat = await adapter.stat(cleanPath);
 				if (stat) {
 					const rEntry = remoteFiles.get(cleanPath);
-					newBase.set(cleanPath, {
-						mtime: stat.mtime,
-						size: stat.size,
-						md5: rEntry?.md5 ?? '',
-					});
+					if (rEntry) {
+						const changedSinceBackup =
+							stat.size !== rEntry.size || (backupMtime !== undefined && rEntry.mtime > backupMtime + 2000);
+						newBase.set(cleanPath, {
+							mtime: changedSinceBackup ? 0 : stat.mtime,
+							size: changedSinceBackup ? rEntry.size : stat.size,
+							md5: rEntry.md5,
+						});
+					}
 				}
 			}
 
@@ -522,7 +652,7 @@ export class RemoteBackupsModal extends Modal {
 							if (!remote) throw new Error('Remote connection unavailable');
 
 							const rawBytes = await remote.read(item.decryptedName);
-							await this.manager.restoreFromZip(rawBytes);
+							await this.manager.restoreFromZip(rawBytes, item.mtime);
 							notice.hide();
 
 							new Notice('Vault restoration complete! Reloading workspace...');

@@ -8,10 +8,11 @@ export type Action =
 	| { type: 'conflict'; path: string } // both changed (or both new w/o base): resolve during apply
 	| { type: 'trashRemote'; path: string }
 	| { type: 'trashLocal'; path: string }
-	| { type: 'forget'; path: string }; // deleted on both sides → drop from base
+	| { type: 'forget'; path: string } // deleted on both sides → drop from base
+	| { type: 'adopt'; path: string; entry: BaseEntry }; // identical on both sides w/o base → record in base
 
-export interface PlanOptions { minDeleteCount: number; maxDeletePct: number } // defaults 10 / 20
-export interface Plan { actions: Action[]; blocked?: string; warnings: string[] }
+export interface PlanOptions { minDeleteCount: number; maxDeletePct: number; reconcile?: boolean } // defaults 10 / 20
+export interface Plan { actions: Action[]; blocked?: string; warnings: string[]; reconcile?: boolean }
 
 const changed = (l: LocalEntry, b: BaseEntry) => Math.abs(l.mtime - b.mtime) > 2000 || l.size !== b.size;
 
@@ -99,10 +100,33 @@ export function plan(
 		const l = lItem?.entry;
 		const r = rItem?.entry;
 
+		if (opts.reconcile) {
+			if (l && r) {
+				if (isSameFile(l, r) && lPath === rPath) {
+					if (!b || b.md5 !== r.md5 || changed(l, b) || bPath !== lPath) {
+						actions.push({ type: 'adopt', path: lPath!, entry: { mtime: l.mtime, size: l.size, md5: r.md5 } });
+					}
+					continue;
+				}
+				if (lPath && lPath !== rPath && base.has(lPath)) {
+					actions.push({ type: 'forget', path: lPath });
+				}
+				actions.push({ type: 'download', path: rPath! });
+			} else if (l) {
+				actions.push({ type: 'trashLocal', path: lPath! });
+			} else if (r) {
+				actions.push({ type: 'download', path: rPath! });
+			} else if (bPath) {
+				actions.push({ type: 'forget', path: bPath });
+			}
+			continue;
+		}
+
 		if (l && r) {
 			// Both local and remote exist under this canonical key
 			if (!b && isSameFile(l, r) && lPath === rPath) {
-				// No base entry, but local and remote are identical within 2s ZIP tolerance: in sync
+				// No base entry, but local and remote are identical within 2s ZIP tolerance: record baseline
+				actions.push({ type: 'adopt', path: lPath!, entry: { mtime: l.mtime, size: l.size, md5: r.md5 } });
 				continue;
 			}
 
@@ -147,12 +171,12 @@ export function plan(
 	let blocked: string | undefined;
 	const deletes = actions.filter((a) => a.type === 'trashRemote' || a.type === 'trashLocal').length;
 	const limit = Math.max(opts.minDeleteCount, (opts.maxDeletePct / 100) * base.size);
-	if (remote.size === 0 && base.size > 0) {
+	if (remote.size === 0 && (base.size > 0 || (opts.reconcile && local.size > 0))) {
 		blocked = T.blockedRemoteEmpty;
 	} else if (deletes > limit) {
 		blocked = T.blockedMassDelete(deletes, Math.floor(limit));
 	}
-	return { actions, blocked, warnings };
+	return { actions, blocked, warnings, reconcile: opts.reconcile };
 }
 
 export interface ApplyHooks {
@@ -234,7 +258,7 @@ export async function apply(
 				return;
 			}
 			const data = await remote.read(path);
-			if (editedLocally(await local.stat(path), base.get(path))) return conflict(path);
+			if (!p.reconcile && editedLocally(await local.stat(path), base.get(path))) return conflict(path);
 			const e = await local.write(path, data, r.mtime);
 			base.set(path, { mtime: e.mtime, size: e.size, md5: r.md5 });
 		},
@@ -249,17 +273,30 @@ export async function apply(
 		trashLocal: async (path) => {
 			const l = await local.stat(path);
 			const b = base.get(path);
-			if (l && b && changed(l, b)) throw new Error(T.errLocalChanged);
+			if (!p.reconcile && l && b && changed(l, b)) throw new Error(T.errLocalChanged);
 			if (l) await local.trash(path);
 			base.delete(path);
 		},
 		forget: async (path) => {
 			base.delete(path);
 		},
+		adopt: async () => {},
 	};
 
+	let adopted = false;
+	for (const a of p.actions) {
+		if (a.type === 'adopt') {
+			base.set(a.path, a.entry);
+			adopted = true;
+		}
+	}
+	if (adopted) {
+		await hooks.saveBase(base);
+	}
+
 	const isDelete = (a: Action) => a.type === 'trashRemote' || a.type === 'trashLocal' || a.type === 'forget';
-	const queue = [...p.actions.filter((a) => !isDelete(a)), ...p.actions.filter(isDelete)];
+	const realActions = p.actions.filter((a) => a.type !== 'adopt');
+	const queue = [...realActions.filter((a) => !isDelete(a)), ...realActions.filter(isDelete)];
 	for (const [i, a] of queue.entries()) {
 		try {
 			await run[a.type](a.path);

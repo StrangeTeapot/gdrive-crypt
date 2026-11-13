@@ -163,6 +163,21 @@ async setControlValue(key: string, value: unknown): Promise<void> {
 					}));
 				},
 			},
+			{
+				name: T.reconcileName,
+				desc: T.reconcileDesc,
+				render: (row) => {
+					row.addButton((b) =>
+						b
+							.setButtonText(T.reconcileButton)
+							.setDisabled(!ready)
+							.onClick(async () => {
+								await p.sync({ reconcile: true });
+								this.update();
+							}),
+					);
+				},
+			},
 			{ name: T.logName, desc: T.logDesc, action: () => p.openLog() },
 			{
 				type: 'page',

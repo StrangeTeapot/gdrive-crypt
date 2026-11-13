@@ -447,12 +447,28 @@ export class CryptDriveFs implements RemoteFs {
 	}
 
 	async cleanEmptyRemoteFolders(): Promise<void> {
-		if (this.pendingFolderCleanup.size === 0) return;
-		const targets = Array.from(this.pendingFolderCleanup);
-		this.pendingFolderCleanup.clear();
 		const protectedIds = await this.getProtectedFolderIds();
-		for (const folderId of targets) {
-			await this.pruneFolderIfEmpty(folderId, protectedIds);
+
+		if (this.pendingFolderCleanup.size > 0) {
+			const targets = Array.from(this.pendingFolderCleanup);
+			this.pendingFolderCleanup.clear();
+			for (const folderId of targets) {
+				await this.pruneFolderIfEmpty(folderId, protectedIds);
+			}
+		}
+
+		// Also sweep any empty vault folders discovered during a full listing (e.g., Reconcile or cross-device deletes)
+		if (this.listed && this.folderIdToPath.size > 0) {
+			const candidates: { id: string; depth: number }[] = [];
+			for (const [folderId, encRel] of this.folderIdToPath.entries()) {
+				if (!encRel || protectedIds.has(folderId)) continue;
+				candidates.push({ id: folderId, depth: encRel.split('/').length });
+			}
+			candidates.sort((a, b) => b.depth - a.depth);
+			for (const candidate of candidates) {
+				if (!this.folderIdToPath.has(candidate.id)) continue;
+				await this.pruneFolderIfEmpty(candidate.id, protectedIds);
+			}
 		}
 	}
 
@@ -609,24 +625,34 @@ if (this.cfg.createRoot) {
 			return undefined;
 		};
 
-		const resolveParentEncPath = async (parentId?: string): Promise<string | null> => {
-			if (!parentId) return null;
+		const outsideVaultIds = new Set<string>(['root']);
+
+        const resolveParentEncPath = async (parentId?: string): Promise<string | null> => {
+			if (!parentId || outsideVaultIds.has(parentId)) return null;
 			if (parentId === topId) return '';
 			if (this.folderIdToPath.has(parentId)) return this.folderIdToPath.get(parentId)!;
 
 			let currId = parentId;
 			const chain: { id: string; name: string }[] = [];
 
-			while (currId && currId !== topId && currId !== 'root') {
+			while (currId && currId !== topId && !outsideVaultIds.has(currId) && !this.folderIdToPath.has(currId)) {
 				const meta = await this.drive.get(currId);
-				if (!meta || meta.trashed || !meta.parents?.[0]) return null;
+				if (!meta || meta.trashed || !meta.parents?.[0]) {
+					for (const seg of chain) outsideVaultIds.add(seg.id);
+					if (currId) outsideVaultIds.add(currId);
+					return null;
+				}
 				chain.unshift({ id: currId, name: meta.name });
 				currId = meta.parents[0];
 			}
 
-			if (currId !== topId) return null; // Outside active vault (e.g., in _deleted/)
+			if (currId !== topId && !this.folderIdToPath.has(currId)) {
+				for (const seg of chain) outsideVaultIds.add(seg.id);
+				if (currId) outsideVaultIds.add(currId);
+				return null;
+			}
 
-			let accum = '';
+			let accum = currId === topId ? '' : (this.folderIdToPath.get(currId) ?? '');
 			for (const seg of chain) {
 				accum = accum ? `${accum}/${seg.name}` : seg.name;
 				this.folderIdToPath.set(seg.id, accum);
@@ -759,7 +785,7 @@ if (this.cfg.createRoot) {
 	}
 
 	async trash(path: string): Promise<void> {
-		const known = this.files.get(path) ?? (await this.find(path));
+		const known = await this.find(path);
 		if (!known) return;
 		this.pendingFolderCleanup.add(known.parent);
 		if (!this.cfg.trashDir) {
@@ -809,14 +835,17 @@ if (this.cfg.createRoot) {
 		return { id: f.id, parent, f };
 	}
 
-	private async dirId(names: string[], create: boolean): Promise<string | undefined> {
+    private async dirId(names: string[], create: boolean): Promise<string | undefined> {
 		let id = 'root';
 		for (let i = 0; i < names.length; i++) {
 			const key = names.slice(0, i + 1).join('/');
-			let next = this.dirs.get(key) ?? (await this.drive.findChild(id, names[i]!, true))?.id;
+			let next = this.dirs.get(key);
 			if (!next) {
-				if (!create) return undefined;
-				next = await this.drive.mkdir(id, names[i]!);
+				next = (await this.drive.findChild(id, names[i]!, true))?.id;
+				if (!next) {
+					if (!create) return undefined;
+					next = await this.drive.mkdir(id, names[i]!);
+				}
 				this.dirs.set(key, next);
 			}
 			id = next;
