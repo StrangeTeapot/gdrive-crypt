@@ -727,6 +727,7 @@ export default class CryptDriveSync extends Plugin {
 
 		this.addCommand({ id: 'sync-now', name: T.cmdSync, callback: () => void this.sync() });
 		this.addCommand({ id: 'show-plan', name: T.cmdPlan, callback: () => void this.sync({ dryRun: true }) });
+		this.addCommand({ id: 'reconcile-from-cloud', name: T.cmdReconcile, callback: () => void this.sync({ reconcile: true }) });
 		this.addCommand({ id: 'show-log', name: T.cmdLog, callback: () => this.openLog() });
 		this.addCommand({ id: 'reset-state', name: T.cmdReset, callback: () => void this.resetState(true) });
 		this.addCommand({ id: 'setup', name: T.cmdWizard, callback: () => this.openWizard() });
@@ -809,7 +810,7 @@ export default class CryptDriveSync extends Plugin {
 		window.clearTimeout(this.editTimer);
 	}
 
-	async sync(opts: { quiet?: boolean; dryRun?: boolean } = {}): Promise<void> {
+	async sync(opts: { quiet?: boolean; dryRun?: boolean; reconcile?: boolean } = {}): Promise<void> {
 		if (this.running) {
 			if (!opts.quiet) new Notice(`${T.noticePrefix}: Sync is already in progress...`);
 			return;
@@ -820,6 +821,10 @@ export default class CryptDriveSync extends Plugin {
 		const base = this.base;
 		let again = false;
 		try {
+			if (opts.reconcile) {
+				this.pageToken = undefined;
+				this.remoteFilesCache = new Map();
+			}
 			const remote = await this.remote(!opts.quiet);
 			if (!remote) return;
 			const local = new VaultFs(this);
@@ -830,7 +835,7 @@ export default class CryptDriveSync extends Plugin {
 			this.remoteFilesCache = remote.getFilesCache();
 
 			const warnings = [...r.warnings, ...this.filter(l, r.files)];
-			const opts1 = { minDeleteCount: MIN_DELETE_COUNT, maxDeletePct: Number(this.settings.maxDeletePct) };
+			const opts1 = { minDeleteCount: MIN_DELETE_COUNT, maxDeletePct: Number(this.settings.maxDeletePct), reconcile: opts.reconcile };
 			let p = plan(l, r.files, base, opts1);
 			p.warnings.unshift(...warnings);
 			p.warnings.forEach((w) => this.log(`\u26a0 ${w}`));
@@ -842,13 +847,16 @@ export default class CryptDriveSync extends Plugin {
 				await new PlanModal(this.app, p, false).ask();
 				return;
 			}
-			if (p.blocked || (this.settings.confirmPlan && hasSyncActions)) {
-				const remoteGone = r.files.size === 0 && base.size > 0;
+			if (p.blocked || ((this.settings.confirmPlan || opts.reconcile) && hasSyncActions)) {
+				const remoteGone = r.files.size === 0 && (base.size > 0 || (Boolean(opts.reconcile) && l.size > 0));
 				if (!(await new PlanModal(this.app, p, !remoteGone).ask())) {
 					this.finish(p.blocked ? T.stopped(p.blocked) : T.cancelled, true);
 					return;
 				}
-				p = { ...plan(l, r.files, base, { minDeleteCount: Infinity, maxDeletePct: 100 }), warnings: p.warnings };
+				p = {
+					...plan(l, r.files, base, { minDeleteCount: Infinity, maxDeletePct: 100, reconcile: opts.reconcile }),
+					warnings: p.warnings,
+				};
 			}
 			if (!hasSyncActions) {
 				let adopted = false;
@@ -1448,8 +1456,9 @@ class PlanModal extends Modal {
 
 	constructor(app: App, p: Plan, canApply: boolean) {
 		super(app);
-		this.setTitle(T.planTitle);
+		this.setTitle(p.reconcile ? T.reconcilePlanTitle : T.planTitle);
 		const el = this.contentEl;
+		if (p.reconcile) el.createEl('p', { text: T.reconcilePlanDesc, cls: 'cds-backup-meta' });
 		if (p.blocked) el.createEl('p', { text: T.stopped(p.blocked), cls: 'mod-warning' });
 		for (const w of p.warnings) el.createEl('p', { text: `\u26a0 ${w}` });
 		const visibleActions = p.actions.filter((a) => a.type !== 'adopt');
